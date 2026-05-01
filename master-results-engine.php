@@ -1304,9 +1304,6 @@ $token   = Session::getFormToken();
             [[form id="leAutoScanForm" method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>"]]
                 [[input type="hidden" name="audit_action" value="scan_batch"]]
                 [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
-                <?php foreach ($scanOptions as $optKey => $optVal) : ?>
-                [[input type="hidden" name="batch_opt_<?php echo htmlspecialchars($optKey, ENT_QUOTES, 'UTF-8'); ?>" value="<?php echo $optVal ? '1' : '0'; ?>"]]
-                <?php endforeach; ?>
                 [[button class="le-audit-button" type="submit"]]Scan Next 10 URLs[[/button]]
             [[/form]]
 
@@ -1655,8 +1652,95 @@ $token   = Session::getFormToken();
 (function () {
     var AUTORUN_KEY = 'leAuditAutorun';
     var SCROLL_KEY  = 'leAuditScrollY';
+    var LS_OPT_KEY  = 'leAuditScanOptions';
     var meta    = document.getElementById('leAuditMeta');
     var pending = meta ? parseInt(meta.getAttribute('data-pending') || '0', 10) : 0;
+
+    // ── Scan options: field-name → option-key mapping ──────────────────────
+    var leOptMap = {
+        'opt_broken_internal':       'check_broken_internal',
+        'opt_broken_internal_links': 'check_broken_internal_links',
+        'opt_broken_external':       'check_broken_external',
+        'opt_broken_images':         'check_broken_images',
+        'opt_seo':                   'check_seo',
+        'opt_speed':                 'check_speed',
+        'opt_alt_text':              'check_alt_text',
+        'opt_store_passed':          'store_passed_pages'
+    };
+
+    // Read current checkbox states into an options object
+    function leGetOpts() {
+        var opts = {};
+        Object.keys(leOptMap).forEach(function (fn) {
+            var el = document.querySelector('input[name="' + fn + '"]');
+            opts[leOptMap[fn]] = el ? el.checked : true;
+        });
+        return opts;
+    }
+
+    // Apply an options object to the checkboxes on the page
+    function leApplyOpts(opts) {
+        Object.keys(leOptMap).forEach(function (fn) {
+            var key = leOptMap[fn];
+            var el  = document.querySelector('input[name="' + fn + '"]');
+            if (el && opts.hasOwnProperty(key)) { el.checked = !!opts[key]; }
+        });
+    }
+
+    // Inject batch_opt_* hidden fields into the batch form so PHP receives them
+    function leInjectBatchOpts(form, opts) {
+        form.querySelectorAll('input[data-le-batch-opt]').forEach(function (el) {
+            el.parentNode.removeChild(el);
+        });
+        Object.keys(opts).forEach(function (k) {
+            var inp = document.createElement('input');
+            inp.type  = 'hidden';
+            inp.name  = 'batch_opt_' + k;
+            inp.value = opts[k] ? '1' : '0';
+            inp.setAttribute('data-le-batch-opt', '1');
+            form.appendChild(inp);
+        });
+    }
+
+    // Load opts from localStorage (or fall back to current checkboxes)
+    function leLoadOpts() {
+        try {
+            var raw = localStorage.getItem(LS_OPT_KEY);
+            return raw ? JSON.parse(raw) : leGetOpts();
+        } catch (e) { return leGetOpts(); }
+    }
+
+    // Submit the batch form, always injecting the stored opts first.
+    // NOTE: form.submit() does NOT fire the submit event, so we must call
+    // leInjectBatchOpts explicitly here rather than relying on a submit listener.
+    function leSubmitBatchForm(form) {
+        leInjectBatchOpts(form, leLoadOpts());
+        form.submit();
+    }
+
+    // ── On page load: apply stored options to the checkboxes ──────────────
+    try {
+        var stored = localStorage.getItem(LS_OPT_KEY);
+        if (stored) { leApplyOpts(JSON.parse(stored)); }
+    } catch (e) {}
+
+    // ── Save Options form: save to localStorage + show confirmation ────────
+    var saveOptsInput = document.querySelector('input[name="audit_action"][value="save_options"]');
+    if (saveOptsInput) {
+        saveOptsInput.closest('form').addEventListener('submit', function () {
+            var opts = leGetOpts();
+            try { localStorage.setItem(LS_OPT_KEY, JSON.stringify(opts)); } catch (e) {}
+            alert('Options saved.\nThese settings will be used for every scan batch.');
+        });
+    }
+
+    // ── "Scan Next 10" button — inject opts on real submit-event click ─────
+    var batchForm = document.getElementById('leAutoScanForm');
+    if (batchForm) {
+        batchForm.addEventListener('submit', function () {
+            leInjectBatchOpts(this, leLoadOpts());
+        });
+    }
 
     // ── Button loading states ──────────────────────────────────────────────
     var buttons = document.querySelectorAll('.le-audit-button');
@@ -1680,7 +1764,7 @@ $token   = Session::getFormToken();
             var stopBtn = document.getElementById('leBtnStopScan');
             if (stopBtn) { stopBtn.style.display = ''; }
             var form = document.getElementById('leAutoScanForm');
-            if (form) { form.submit(); }
+            if (form) { leSubmitBatchForm(form); }
         });
     }
 
@@ -1722,11 +1806,10 @@ $token   = Session::getFormToken();
             setTimeout(function () {
                 var form = document.getElementById('leAutoScanForm');
                 if (form) {
-                    // Save current scroll position right before submitting
                     sessionStorage.setItem(SCROLL_KEY, window.scrollY);
                     var btn = form.querySelector('button[type="submit"]');
                     if (btn) { btn.innerHTML = 'Working\u2026'; btn.disabled = true; }
-                    form.submit();
+                    leSubmitBatchForm(form);
                 }
             }, 1500);
         } else {
