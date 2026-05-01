@@ -18,9 +18,9 @@ $input = $app->input;
 // ── Config ───────────────────────────────────────────────────────────────────
 $config = [
     'site_root'        => 'https://lottoexpert.net',
-    'batch_limit'      => 10,
+    'batch_limit'      => 3,
     'max_queue_size'   => 25000,
-    'request_timeout'  => 8,
+    'request_timeout'  => 4,
     'allowed_host'     => 'lottoexpert.net',
     'allowed_hosts'    => ['lottoexpert.net', 'www.lottoexpert.net'],
     'ignore_patterns'  => [
