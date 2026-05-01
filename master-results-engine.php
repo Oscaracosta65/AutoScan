@@ -1155,7 +1155,17 @@ $token   = Session::getFormToken();
     [[section class="le-audit-card"]]
         [[h2]]Broken Links Found[[/h2]]
         [[p class="le-audit-small"]]
-            These are internal links discovered while crawling that returned a 4xx or 5xx error. The &ldquo;Source Page&rdquo; column shows which page on your site contains the broken link.
+            These are links that the crawler found on your site and tried to open, but received an error response.
+            Each row tells you two things: (1) the <strong>Page On Your Site</strong> that contains the bad link &mdash; this is where you need to go to edit or remove the link &mdash; and (2) the <strong>Broken Link URL</strong> itself, i.e. the address that is returning an error.
+            The <strong>Error Code</strong> explains what kind of failure occurred (see key below).
+        [[/p]]
+        [[p class="le-audit-small"]]
+            [[strong]]Error code key:[[/strong]]
+            [[strong]]404[[/strong]] = Page Not Found (the URL no longer exists) &mdash;
+            [[strong]]410[[/strong]] = Gone (permanently deleted) &mdash;
+            [[strong]]500[[/strong]] = Server Error (the destination server crashed) &mdash;
+            [[strong]]503[[/strong]] = Service Unavailable (server overloaded or down) &mdash;
+            [[strong]]0[[/strong]] = Connection Failed (the domain could not be reached at all).
         [[/p]]
         <?php if (empty($brokenLinkItems)) : ?>
             [[p]][[span class="le-audit-pill pass"]]PASS[[/span]] No broken internal links detected yet.[[/p]]
@@ -1164,16 +1174,41 @@ $token   = Session::getFormToken();
                 [[table class="le-audit-table"]]
                     [[thead]]
                         [[tr]]
-                            [[th]]Status[[/th]]
-                            [[th]]Source Page (contains the broken link)[[/th]]
-                            [[th]]Broken Link URL[[/th]]
-                            [[th]]Found At[[/th]]
+                            [[th]]Error Code[[/th]]
+                            [[th]]Page On Your Site (go here to fix or remove the link)[[/th]]
+                            [[th]]Broken Link URL (this is the bad link that needs fixing)[[/th]]
+                            [[th]]When Detected[[/th]]
                         [[/tr]]
                     [[/thead]]
                     [[tbody]]
                         <?php foreach ($brokenLinkItems as $bl) : ?>
+                            <?php
+                                $statusCode = (int) $bl['status'];
+                                $statusLabel = match(true) {
+                                    $statusCode === 0   => '0 – Connection Failed',
+                                    $statusCode === 400 => '400 – Bad Request',
+                                    $statusCode === 401 => '401 – Unauthorised',
+                                    $statusCode === 403 => '403 – Forbidden',
+                                    $statusCode === 404 => '404 – Page Not Found',
+                                    $statusCode === 405 => '405 – Method Not Allowed',
+                                    $statusCode === 410 => '410 – Gone (Deleted)',
+                                    $statusCode === 429 => '429 – Too Many Requests',
+                                    $statusCode === 500 => '500 – Server Error',
+                                    $statusCode === 502 => '502 – Bad Gateway',
+                                    $statusCode === 503 => '503 – Service Unavailable',
+                                    $statusCode === 504 => '504 – Gateway Timeout',
+                                    $statusCode >= 400 && $statusCode < 500 => $statusCode . ' – Client Error',
+                                    $statusCode >= 500 => $statusCode . ' – Server Error',
+                                    default             => (string) $statusCode,
+                                };
+                                $foundAt = '';
+                                if (!empty($bl['found_at'])) {
+                                    $ts = strtotime($bl['found_at']);
+                                    $foundAt = $ts ? date('d M Y, H:i', $ts) . ' UTC' : $bl['found_at'];
+                                }
+                            ?>
                             [[tr]]
-                                [[td]][[span class="le-audit-pill critical"]]<?php echo (int) $bl['status']; ?>[[/span]][[/td]]
+                                [[td]][[span class="le-audit-pill critical"]]<?php echo htmlspecialchars($statusLabel, ENT_QUOTES, 'UTF-8'); ?>[[/span]][[/td]]
                                 [[td class="le-audit-url"]]
                                     [[a href="<?php echo htmlspecialchars($bl['source_page'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
                                         <?php echo htmlspecialchars($bl['source_page'], ENT_QUOTES, 'UTF-8'); ?>
@@ -1184,7 +1219,7 @@ $token   = Session::getFormToken();
                                         <?php echo htmlspecialchars($bl['broken_url'], ENT_QUOTES, 'UTF-8'); ?>
                                     [[/a]]
                                 [[/td]]
-                                [[td class="le-audit-small"]]<?php echo htmlspecialchars($bl['found_at'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td class="le-audit-small"]]<?php echo htmlspecialchars($foundAt, ENT_QUOTES, 'UTF-8'); ?>[[/td]]
                             [[/tr]]
                         <?php endforeach; ?>
                     [[/tbody]]
