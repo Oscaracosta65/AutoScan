@@ -20,7 +20,7 @@ $config = [
     'site_root'        => 'https://lottoexpert.net',
     'batch_limit'      => 10,
     'max_queue_size'   => 25000,
-    'request_timeout'  => 5,
+    'request_timeout'  => 3,
     'audit_dir'        => JPATH_ROOT . '/lottoexpert/audit-results',
     'queue_file'       => JPATH_ROOT . '/lottoexpert/audit-results/full-site-audit-queue.json',
     'results_file'     => JPATH_ROOT . '/lottoexpert/audit-results/full-site-audit-results.json',
@@ -133,7 +133,7 @@ function leAuditReadJson($file, $default)
 
 function leAuditWriteJson($file, array $data)
 {
-    File::write($file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    File::write($file, json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 }
 
 function leAuditInitState(array $config)
@@ -141,7 +141,7 @@ function leAuditInitState(array $config)
     $queue = leAuditReadJson($config['queue_file'], []);
     $results = leAuditReadJson($config['results_file'], []);
 
-    if (empty($queue)) {
+    if (empty($queue) && !File::exists($config['queue_file'])) {
         $queue = [
             'created_at' => gmdate('c'),
             'updated_at' => gmdate('c'),
@@ -155,9 +155,12 @@ function leAuditInitState(array $config)
         $queue['seen'][$home] = true;
 
         leAuditWriteJson($config['queue_file'], $queue);
+    } elseif (empty($queue)) {
+        // File exists but is corrupted — use safe in-memory defaults without wiping the file
+        $queue = ['pending' => [], 'seen' => [], 'scanned' => []];
     }
 
-    if (empty($results)) {
+    if (empty($results) && !File::exists($config['results_file'])) {
         $results = [
             'created_at' => gmdate('c'),
             'updated_at' => gmdate('c'),
@@ -166,6 +169,9 @@ function leAuditInitState(array $config)
         ];
 
         leAuditWriteJson($config['results_file'], $results);
+    } elseif (empty($results)) {
+        // File exists but is corrupted — use safe in-memory defaults without wiping the file
+        $results = ['items' => [], 'summary' => []];
     }
 
     return [$queue, $results];
@@ -596,11 +602,13 @@ function leAuditExportCsv(array $results, array $config)
 
     $fp = fopen($config['csv_file'], 'w');
 
-    foreach ($lines as $line) {
-        fputcsv($fp, $line);
-    }
+    if ($fp !== false) {
+        foreach ($lines as $line) {
+            fputcsv($fp, $line);
+        }
 
-    fclose($fp);
+        fclose($fp);
+    }
 }
 
 [$queue, $results] = leAuditInitState($config);
@@ -622,6 +630,7 @@ if ($action !== '' && !Session::checkToken('post')) {
     leAuditWriteJson($config['queue_file'], $queue);
     $message = 'Sitemap discovery complete. Added ' . (int) $added . ' new URLs.';
 } elseif ($action === 'scan_batch') {
+    @set_time_limit(300);
     $processed = 0;
     $newUrlsFound = 0;
     $batchLimit = (int) $config['batch_limit'];
