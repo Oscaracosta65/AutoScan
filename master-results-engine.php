@@ -1293,6 +1293,7 @@ $token   = Session::getFormToken();
                     <?php endforeach; ?>
                 [[/div]]
                 [[button class="le-audit-button secondary" type="submit" style="font-size:14px;padding:8px 16px;"]]Save Options[[/button]]
+                [[span id="leOptsSaved" style="display:none;margin-left:12px;font-weight:700;color:#1a6b2a;"]]&#10003; Options saved[[/span]]
             [[/form]]
         [[/div]]
 
@@ -1724,13 +1725,17 @@ $token   = Session::getFormToken();
         if (stored) { leApplyOpts(JSON.parse(stored)); }
     } catch (e) {}
 
-    // ── Save Options form: save to localStorage + show confirmation ────────
+    // ── Save Options form: save to localStorage + show inline confirmation ──
     var saveOptsInput = document.querySelector('input[name="audit_action"][value="save_options"]');
     if (saveOptsInput) {
         saveOptsInput.closest('form').addEventListener('submit', function () {
             var opts = leGetOpts();
             try { localStorage.setItem(LS_OPT_KEY, JSON.stringify(opts)); } catch (e) {}
-            alert('Options saved.\nThese settings will be used for every scan batch.');
+            var msg = document.getElementById('leOptsSaved');
+            if (msg) {
+                msg.style.display = 'inline';
+                setTimeout(function () { msg.style.display = 'none'; }, 4000);
+            }
         });
     }
 
