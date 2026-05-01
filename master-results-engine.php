@@ -18,7 +18,7 @@ $input = $app->input;
 // ── Config ───────────────────────────────────────────────────────────────────
 $config = [
     'site_root'        => 'https://lottoexpert.net',
-    'batch_limit'      => 10,
+    'batch_limit'      => 15,
     'max_queue_size'   => 25000,
     'request_timeout'  => 4,
     'allowed_host'     => 'lottoexpert.net',
@@ -1832,15 +1832,13 @@ $token   = Session::getFormToken();
                 if (data.done || data.pending <= 0) {
                     sessionStorage.removeItem(AUTORUN_KEY);
                     sessionStorage.removeItem(SCROLL_KEY);
-                    if (runningBanner) { runningBanner.style.display = 'none'; }
-                    if (doneBanner)    { doneBanner.style.display = ''; }
-                    var ab = document.getElementById('leBtnAutoScan');
-                    var sb = document.getElementById('leBtnStopScan');
-                    if (ab) { ab.innerHTML = 'Auto Scan Until Finished'; ab.disabled = false; }
-                    if (sb) { sb.style.display = 'none'; }
+                    // Reload the page so PHP re-renders results from session and
+                    // the export button is available. The on-load pending===0 branch
+                    // will show the "done" banner automatically.
+                    window.location.reload();
                     return;
                 }
-                setTimeout(leRunAjaxBatch, 300);
+                setTimeout(leRunAjaxBatch, 100);
             })
             .catch(function () {
                 // On any error (504, network failure, JSON parse) wait and retry
