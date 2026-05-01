@@ -43,6 +43,7 @@ $config = [
         'tel:',
         'javascript:',
     ],
+    'sitemap_timeout'    => 30,
     'sitemap_candidates' => [
         'https://lottoexpert.net/sitemap_xml.xml',
         'https://lottoexpert.net/sitemap.xml',
@@ -173,8 +174,9 @@ function leAuditInitState(array $config)
     return [$queue, $results];
 }
 
-function leAuditFetchUrl($url, array $config)
+function leAuditFetchUrl($url, array $config, $timeout = null)
 {
+    $timeoutSeconds = ($timeout !== null) ? (int) $timeout : (int) $config['request_timeout'];
     $response = [
         'url' => $url,
         'status' => 0,
@@ -201,8 +203,8 @@ function leAuditFetchUrl($url, array $config)
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS      => 5,
-        CURLOPT_CONNECTTIMEOUT => $config['request_timeout'],
-        CURLOPT_TIMEOUT        => $config['request_timeout'],
+        CURLOPT_CONNECTTIMEOUT => $timeoutSeconds,
+        CURLOPT_TIMEOUT        => $timeoutSeconds,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_USERAGENT      => 'LottoExpert Private Audit Scanner/2.0',
@@ -502,7 +504,7 @@ function leAuditLoadSitemapUrls(array $config)
 
         $sitemapsRead[$currentSitemap] = true;
 
-        $fetch = leAuditFetchUrl($currentSitemap, $config);
+        $fetch = leAuditFetchUrl($currentSitemap, $config, $config['sitemap_timeout']);
 
         if ($fetch['status'] < 200 || $fetch['status'] >= 300 || $fetch['body'] === '') {
             $errDetail = $fetch['error'] !== '' ? ': ' . $fetch['error'] : '';
@@ -517,8 +519,10 @@ function leAuditLoadSitemapUrls(array $config)
             continue;
         }
 
-        $isSitemapIndex = stripos($body, '<sitemapindex') !== false;
+        $isSitemapIndex = stripos($body, '<sitemapindex') !== false
+                       || (stripos($body, '<sitemap>') !== false && stripos($body, '<url>') === false);
         $foundUrls      = 0;
+        $foundUnique    = [];
         $subSitemaps    = 0;
 
         foreach ($matches[1] as $loc) {
@@ -537,18 +541,35 @@ function leAuditLoadSitemapUrls(array $config)
                 continue;
             }
 
+            // Treat any <loc> that points to an .xml file on an allowed host as a
+            // sub-sitemap (handles sitemap indexes that use <urlset> instead of
+            // <sitemapindex>, e.g. some Joomla sitemap components).
+            $locHost = strtolower((string) parse_url($loc, PHP_URL_HOST));
+            $locPath = (string) parse_url($loc, PHP_URL_PATH);
+            if (in_array($locHost, $config['allowed_hosts'], true) && preg_match('#\.xml$#i', $locPath)) {
+                if (!isset($sitemapsRead[$loc])) {
+                    $sitemapsToRead[] = $loc;
+                    $subSitemaps++;
+                }
+
+                continue;
+            }
+
             $normalized = leAuditNormalizeUrl($loc, $config);
 
             if ($normalized !== '') {
                 $urls[] = $normalized;
+                $foundUnique[$normalized] = true;
                 $foundUrls++;
             }
         }
 
         if ($isSitemapIndex) {
             $diagnostics[] = 'INDEX ' . $currentSitemap . ' → queued ' . $subSitemaps . ' sub-sitemaps';
+        } elseif ($subSitemaps > 0) {
+            $diagnostics[] = 'MIXED ' . $currentSitemap . ' → ' . count($foundUnique) . ' page URLs + queued ' . $subSitemaps . ' sub-sitemaps';
         } else {
-            $diagnostics[] = 'OK ' . $currentSitemap . ' → ' . $foundUrls . ' page URLs';
+            $diagnostics[] = 'OK ' . $currentSitemap . ' → ' . count($foundUnique) . ' unique page URLs (' . $foundUrls . ' raw)';
         }
     }
 
@@ -749,6 +770,9 @@ if ($action !== '' && !Session::checkToken('post')) {
              . 'Added ' . (int) $added . ' new URLs to queue'
              . ($alreadyQueued > 0 ? ' (' . $alreadyQueued . ' already queued).' : '.') . $diagText;
 } elseif ($action === 'scan_batch') {
+    @set_time_limit(120);
+    @ignore_user_abort(true);
+
     $processed    = 0;
     $newUrlsFound = 0;
     $batchLimit   = (int) $config['batch_limit'];
@@ -779,15 +803,19 @@ if ($action !== '' && !Session::checkToken('post')) {
         $newUrlsFound += leAuditAddUrlsToQueue($queue, $discoveredLinks, $config);
 
         $processed++;
+
+        // Write progress after every URL so no data is lost if PHP times out
+        $queue['updated_at']   = gmdate('c');
+        $results['updated_at'] = gmdate('c');
+        leAuditWriteJson($config['queue_file'], $queue);
+        leAuditWriteJson($config['results_file'], $results);
     }
 
     $results['summary']  = leAuditBuildSummary($results);
     $results['updated_at'] = gmdate('c');
     $queue['updated_at']   = gmdate('c');
-
     leAuditWriteJson($config['queue_file'], $queue);
     leAuditWriteJson($config['results_file'], $results);
-    //  leAuditExportCsv($results, $config);
 
     $pendingAfter = count($queue['pending']);
     $message = 'Batch complete. Scanned ' . (int) $processed . ' URLs. '
@@ -811,6 +839,7 @@ $progressPct = ($seenCount > 0) ? min(100, (int) round(($scannedCount / $seenCou
 
 $criticalItems = [];
 $warningItems  = [];
+$passedItems   = [];
 $recentItems   = [];
 
 if (!empty($results['items'])) {
@@ -821,6 +850,8 @@ if (!empty($results['items'])) {
             $criticalItems[] = $item;
         } elseif (!empty($item['warnings'])) {
             $warningItems[] = $item;
+        } else {
+            $passedItems[] = $item;
         }
     }
 
@@ -828,15 +859,21 @@ if (!empty($results['items'])) {
         return strcmp($b['scanned_at'] ?? '', $a['scanned_at'] ?? '');
     });
 
-    $recentItems = array_slice($allItems, 0, 10);
+    $recentItems = array_slice($allItems, 0, 25);
 }
 
 $criticalItems = array_slice($criticalItems, 0, 100);
 $warningItems  = array_slice($warningItems, 0, 100);
+$passedItems   = array_slice($passedItems, 0, 100);
 
 $baseUrl = Uri::current();
 $token   = Session::getFormToken();
 $autoRun = (int) $input->getInt('autorun', 0);
+
+// Build the autorun URL preserving any existing Joomla query params (option, view, id, etc.)
+$_autoRunUri = clone Uri::getInstance();
+$_autoRunUri->setVar('autorun', '1');
+$autoRunUrl = $_autoRunUri->toString();
 ?>
 
 [[style]]
@@ -1083,7 +1120,7 @@ $autoRun = (int) $input->getInt('autorun', 0);
                 [[button class="le-audit-button" type="submit"]]Scan Next 10 URLs[[/button]]
             [[/form]]
 
-            [[form id="leAutoRunForm" method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>?autorun=1"]]
+            [[form id="leAutoRunForm" method="post" action="<?php echo htmlspecialchars($autoRunUrl, ENT_QUOTES, 'UTF-8'); ?>"]]
                 [[input type="hidden" name="audit_action" value="scan_batch"]]
                 [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
                 [[button class="le-audit-button secondary" type="submit"]]Auto Scan Until Finished[[/button]]
@@ -1149,6 +1186,11 @@ $autoRun = (int) $input->getInt('autorun', 0);
             [[/div]]
 
             [[div class="le-audit-metric"]]
+                [[strong]]<?php echo (int) $summary['passed_pages']; ?>[[/strong]]
+                [[span]]Passed Pages[[/span]]
+            [[/div]]
+
+            [[div class="le-audit-metric"]]
                 [[strong]]<?php echo (int) $summary['missing_titles']; ?>[[/strong]]
                 [[span]]Missing Titles[[/span]]
             [[/div]]
@@ -1211,9 +1253,11 @@ $autoRun = (int) $input->getInt('autorun', 0);
         [[/section]]
     <?php endif; ?>
 
-    <?php if (!empty($recentItems)) : ?>
-        [[section class="le-audit-card"]]
-            [[h2]]Recently Scanned[[/h2]]
+    [[section class="le-audit-card"]]
+        [[h2]]Recently Scanned (last 25)[[/h2]]
+        <?php if (empty($recentItems)) : ?>
+            [[p class="le-audit-small"]]No URLs scanned yet. Run a batch scan to see results here.[[/p]]
+        <?php else : ?>
             [[div class="le-audit-table-wrap"]]
                 [[table class="le-audit-table"]]
                     [[thead]]
@@ -1254,8 +1298,8 @@ $autoRun = (int) $input->getInt('autorun', 0);
                     [[/tbody]]
                 [[/table]]
             [[/div]]
-        [[/section]]
-    <?php endif; ?>
+        <?php endif; ?>
+    [[/section]]
 
     [[section class="le-audit-card"]]
         [[h2]]Critical Issues[[/h2]]
@@ -1335,6 +1379,43 @@ $autoRun = (int) $input->getInt('autorun', 0);
                                 [[td]]<?php echo (int) $item['h1_count']; ?>[[/td]]
                                 [[td]]<?php echo (int) ($item['images_without_alt'] ?? 0); ?>[[/td]]
                                 [[td]]<?php echo (int) $item['load_time_ms']; ?> ms[[/td]]
+                            [[/tr]]
+                        <?php endforeach; ?>
+                    [[/tbody]]
+                [[/table]]
+            [[/div]]
+        <?php endif; ?>
+    [[/section]]
+
+    [[section class="le-audit-card"]]
+        [[h2]]Passed Pages (no issues, no warnings) &mdash; showing up to 100[[/h2]]
+
+        <?php if (empty($passedItems)) : ?>
+            [[p class="le-audit-small"]]No passed pages recorded yet.[[/p]]
+        <?php else : ?>
+            [[div class="le-audit-table-wrap"]]
+                [[table class="le-audit-table"]]
+                    [[thead]]
+                        [[tr]]
+                            [[th]]Status[[/th]]
+                            [[th]]URL[[/th]]
+                            [[th]]Title[[/th]]
+                            [[th]]Load[[/th]]
+                            [[th]]Scanned At[[/th]]
+                        [[/tr]]
+                    [[/thead]]
+                    [[tbody]]
+                        <?php foreach ($passedItems as $item) : ?>
+                            [[tr]]
+                                [[td]][[span class="le-audit-pill pass"]]<?php echo (int) $item['status']; ?>[[/span]][[/td]]
+                                [[td class="le-audit-url"]]
+                                    [[a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
+                                        <?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>
+                                    [[/a]]
+                                [[/td]]
+                                [[td]]<?php echo htmlspecialchars($item['title'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td]]<?php echo (int) $item['load_time_ms']; ?> ms[[/td]]
+                                [[td class="le-audit-small"]]<?php echo htmlspecialchars($item['scanned_at'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
                             [[/tr]]
                         <?php endforeach; ?>
                     [[/tbody]]
