@@ -872,6 +872,7 @@ if ($action !== '' && !Session::checkToken('post')) {
         if ($isPassing && !($scanOptions['store_passed_pages'] ?? false)) {
             $results['passed_pages_count'] = ($results['passed_pages_count'] ?? 0) + 1;
         } else {
+            $result['source_page'] = $queue['referrers'][$normalized] ?? '';
             $results['items'][$normalized] = $result;
         }
         $queue['scanned'][$normalized] = true;
@@ -1442,6 +1443,7 @@ $token   = Session::getFormToken();
                     [[thead]]
                         [[tr]]
                             [[th]]Status[[/th]][[th]]URL[[/th]][[th]]Issues[[/th]]
+                            [[th]]Found On (source page)[[/th]]
                             [[th]]Title[[/th]][[th]]H1 Text[[/th]][[th]]Meta Description[[/th]]
                             [[th]]Canonical[[/th]][[th]]Load[[/th]]
                         [[/tr]]
@@ -1456,6 +1458,14 @@ $token   = Session::getFormToken();
                                     [[/a]]
                                 [[/td]]
                                 [[td]]<?php echo htmlspecialchars(implode(' | ', $item['issues']), ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td class="le-audit-url"]]<?php
+                                    $srcPage = $item['source_page'] ?? '';
+                                    if ($srcPage !== '') {
+                                        echo '[[a href="' . htmlspecialchars($srcPage, ENT_QUOTES, 'UTF-8') . '" target="_blank" rel="noopener"]]' . htmlspecialchars($srcPage, ENT_QUOTES, 'UTF-8') . '[[/a]]';
+                                    } else {
+                                        echo '[[span class="le-audit-small" style="color:#888;"]]—[[/span]]';
+                                    }
+                                ?>[[/td]]
                                 [[td]]<?php echo htmlspecialchars($item['title'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
                                 [[td]]<?php echo htmlspecialchars($item['h1_text'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
                                 [[td]]<?php echo htmlspecialchars($item['meta_description'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
