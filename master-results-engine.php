@@ -800,6 +800,12 @@ if ($action !== '' && !Session::checkToken('post')) {
     unset($_SESSION['le_queue'], $_SESSION['le_results']);
     [$queue, $results] = leAuditInitState($config);
     $message = 'Audit reset successfully.';
+} elseif ($action === 'stop_all') {
+    $queue['pending']          = [];
+    if (isset($queue['ext_pending']))      { $queue['ext_pending']      = []; }
+    if (isset($queue['int_link_pending'])) { $queue['int_link_pending'] = []; }
+    leAuditSessionSet('le_queue', $queue);
+    $message = '🛑 Scan stopped. All pending URLs have been cleared. Results collected so far are preserved. Click Reset Audit to start a completely fresh scan.';
 } elseif ($action === 'discover_sitemap') {
     $sitemapResult = leAuditLoadSitemapUrls($config);
     $sitemapUrls   = $sitemapResult['urls'];
@@ -814,6 +820,17 @@ if ($action !== '' && !Session::checkToken('post')) {
 } elseif ($action === 'scan_batch') {
     @set_time_limit(120);
     @ignore_user_abort(true);
+
+    // Re-read scan options from the embedded batch form fields and re-persist them.
+    // This ensures settings survive across batches even if the Joomla session is
+    // regenerated between requests (common in Sourcerer-embedded articles).
+    $optionKeys = array_keys(leAuditGetDefaultOptions());
+    if ($input->getInt('batch_opt_check_seo', -1) !== -1) {
+        foreach ($optionKeys as $k) {
+            $scanOptions[$k] = (bool) $input->getInt('batch_opt_' . $k, 0);
+        }
+        leAuditSessionSet('le_scan_options', $scanOptions);
+    }
 
     $processed    = 0;
     $newUrlsFound = 0;
@@ -1246,9 +1263,9 @@ $token   = Session::getFormToken();
             Private crawler for LottoExpert. Discovers internal URLs from the sitemap (including nested sitemap index files), crawls internal links, scans 10 URLs per batch, auto-continues without timeouts, and reports SEO, crawlability, metadata, canonical, H1, noindex, image alt, speed, and broken-page issues.
         [[/p]]
 
-        [[details open style="margin-top:18px;"]]
-            [[summary style="cursor:pointer;font-weight:700;font-size:15px;color:#1a73e8;"]]&#9881; Scan Options (click to expand)[[/summary]]
-            [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>" style="margin-top:14px;"]]
+        [[div style="margin-top:18px;border:1px solid #d0d7de;border-radius:8px;padding:16px 20px;"]]
+            [[p style="margin:0 0 4px;font-weight:700;font-size:15px;color:#1a73e8;"]]&#9881; Scan Options[[/p]]
+            [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>" style="margin-top:10px;"]]
                 [[input type="hidden" name="audit_action" value="save_options"]]
                 [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
                 [[p class="le-audit-small" style="margin:0 0 10px;"]]
@@ -1277,7 +1294,7 @@ $token   = Session::getFormToken();
                 [[/div]]
                 [[button class="le-audit-button secondary" type="submit" style="font-size:14px;padding:8px 16px;"]]Save Options[[/button]]
             [[/form]]
-        [[/details]]
+        [[/div]]
 
         <?php if ($message !== '') : ?>
             [[div class="le-audit-alert"]]<?php echo nl2br(htmlspecialchars($message, ENT_QUOTES, 'UTF-8')); ?>[[/div]]
@@ -1287,12 +1304,21 @@ $token   = Session::getFormToken();
             [[form id="leAutoScanForm" method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>"]]
                 [[input type="hidden" name="audit_action" value="scan_batch"]]
                 [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
+                <?php foreach ($scanOptions as $optKey => $optVal) : ?>
+                [[input type="hidden" name="batch_opt_<?php echo htmlspecialchars($optKey, ENT_QUOTES, 'UTF-8'); ?>" value="<?php echo $optVal ? '1' : '0'; ?>"]]
+                <?php endforeach; ?>
                 [[button class="le-audit-button" type="submit"]]Scan Next 10 URLs[[/button]]
             [[/form]]
 
             [[button id="leBtnAutoScan" class="le-audit-button secondary" type="button"]]Auto Scan Until Finished[[/button]]
 
             [[button id="leBtnStopScan" class="le-audit-button secondary" type="button" style="display:none;"]]⏹ Stop Auto Scan[[/button]]
+
+            [[form id="leStopAllForm" method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>" onsubmit="return leStopAllConfirm();"]]
+                [[input type="hidden" name="audit_action" value="stop_all"]]
+                [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
+                [[button class="le-audit-button danger" type="submit"]]🛑 Stop All[[/button]]
+            [[/form]]
 
             [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>"]]
                 [[input type="hidden" name="audit_action" value="discover_sitemap"]]
@@ -1669,6 +1695,13 @@ $token   = Session::getFormToken();
             if (running) { running.style.display = 'none'; }
         });
     }
+
+    // ── "Stop All" form — clear autorun state before server-side queue wipe ─
+    window.leStopAllConfirm = function () {
+        sessionStorage.removeItem(AUTORUN_KEY);
+        sessionStorage.removeItem(SCROLL_KEY);
+        return confirm('Stop all scanning and clear the pending queue? Results collected so far will be kept.');
+    };
 
     // ── Auto-run loop ──────────────────────────────────────────────────────
     var runningBanner = document.getElementById('leAutorunRunning');
