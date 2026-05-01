@@ -1193,7 +1193,7 @@ $token   = Session::getFormToken();
             Private crawler for LottoExpert. Discovers internal URLs from the sitemap (including nested sitemap index files), crawls internal links, scans 10 URLs per batch, auto-continues without timeouts, and reports SEO, crawlability, metadata, canonical, H1, noindex, image alt, speed, and broken-page issues.
         [[/p]]
 
-        [[details style="margin-top:18px;"]]
+        [[details open style="margin-top:18px;"]]
             [[summary style="cursor:pointer;font-weight:700;font-size:15px;color:#1a73e8;"]]&#9881; Scan Options (click to expand)[[/summary]]
             [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>" style="margin-top:14px;"]]
                 [[input type="hidden" name="audit_action" value="save_options"]]
@@ -1237,6 +1237,8 @@ $token   = Session::getFormToken();
             [[/form]]
 
             [[button id="leBtnAutoScan" class="le-audit-button secondary" type="button"]]Auto Scan Until Finished[[/button]]
+
+            [[button id="leBtnStopScan" class="le-audit-button secondary" type="button" style="display:none;"]]⏹ Stop Auto Scan[[/button]]
 
             [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>"]]
                 [[input type="hidden" name="audit_action" value="discover_sitemap"]]
