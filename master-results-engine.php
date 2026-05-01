@@ -45,6 +45,20 @@ $config = [
     ],
 ];
 
+// ── Scan options ─────────────────────────────────────────────────────────────
+function leAuditGetDefaultOptions(): array
+{
+    return [
+        'check_broken_internal' => true,  // record 404/5xx internal pages as broken links
+        'check_broken_external' => true,  // HEAD-check external links found on pages
+        'check_broken_images'   => true,  // HEAD-check image src URLs found on pages
+        'check_seo'             => true,  // title, meta description, canonical, H1, noindex
+        'check_speed'           => true,  // flag pages loading > 3 s
+        'check_alt_text'        => true,  // flag images missing alt attribute
+        'store_passed_pages'    => false, // keep full item data for pages with no issues/warnings
+    ];
+}
+
 // ── Core functions ───────────────────────────────────────────────────────────
 
 function leAuditNormalizeUrl(string $url, array $config): string
@@ -392,18 +406,22 @@ function leAuditHasNoindex(string $html, string $responseHeaders = ''): bool
     return false;
 }
 
-function leAuditCheckUrl(string $url, array $config): array
+function leAuditCheckUrl(string $url, array $config, array $options = []): array
 {
+    $checkSeo     = $options['check_seo']      ?? true;
+    $checkSpeed   = $options['check_speed']    ?? true;
+    $checkAltText = $options['check_alt_text'] ?? true;
+
     $fetch = leAuditFetchUrl($url, $config);
     $html  = $fetch['body'];
 
-    $title       = leAuditExtractTag($html, 'title');
-    $description = leAuditExtractMetaDescription($html);
-    $canonical   = leAuditExtractCanonical($html);
-    $h1Count     = leAuditCountH1($html);
-    $h1Text      = leAuditExtractH1Text($html);
-    $noindex     = leAuditHasNoindex($html, $fetch['response_headers']);
-    $imgsNoAlt   = leAuditCountImagesWithoutAlt($html);
+    $title       = $checkSeo     ? leAuditExtractTag($html, 'title')          : '';
+    $description = $checkSeo     ? leAuditExtractMetaDescription($html)        : '';
+    $canonical   = $checkSeo     ? leAuditExtractCanonical($html)              : '';
+    $h1Count     = $checkSeo     ? leAuditCountH1($html)                       : 0;
+    $h1Text      = $checkSeo     ? leAuditExtractH1Text($html)                 : '';
+    $noindex     = $checkSeo     ? leAuditHasNoindex($html, $fetch['response_headers']) : false;
+    $imgsNoAlt   = $checkAltText ? leAuditCountImagesWithoutAlt($html)         : 0;
 
     $titleLen = mb_strlen($title, 'UTF-8');
     $descLen  = mb_strlen($description, 'UTF-8');
@@ -421,7 +439,7 @@ function leAuditCheckUrl(string $url, array $config): array
         $issues[] = 'Client error ' . $fetch['status'];
     }
 
-    if ($fetch['status'] >= 200 && $fetch['status'] < 300) {
+    if ($checkSeo && $fetch['status'] >= 200 && $fetch['status'] < 300) {
         if ($title === '') {
             $issues[] = 'Missing title tag';
         } elseif ($titleLen < 10) {
@@ -451,14 +469,14 @@ function leAuditCheckUrl(string $url, array $config): array
         if ($noindex) {
             $warnings[] = 'Page has a noindex directive — This page is actively instructing search engines NOT to index it (via a <meta name="robots" content="noindex"> tag or an X-Robots-Tag HTTP header). If this is unintentional, remove the noindex directive so the page can appear in search results.';
         }
+    }
 
-        if ($imgsNoAlt > 0) {
-            $warnings[] = $imgsNoAlt . ' image(s) are missing alt text — The alt attribute on an <img> tag describes the image to search engines and screen-reader users. Missing alt text harms SEO and accessibility. Add a short, descriptive alt="…" to every image on this page.';
-        }
+    if ($checkAltText && $imgsNoAlt > 0 && $fetch['status'] >= 200 && $fetch['status'] < 300) {
+        $warnings[] = $imgsNoAlt . ' image(s) are missing alt text — The alt attribute on an <img> tag describes the image to search engines and screen-reader users. Missing alt text harms SEO and accessibility. Add a short, descriptive alt="…" to every image on this page.';
+    }
 
-        if ($fetch['load_time_ms'] > 3000) {
-            $warnings[] = 'Slow page load time (' . $fetch['load_time_ms'] . ' ms) — Google uses page speed as a ranking factor; pages taking over 3 seconds to load are penalised and have higher visitor bounce rates. Investigate large images, render-blocking scripts, or slow server response times.';
-        }
+    if ($checkSpeed && $fetch['load_time_ms'] > 3000 && $fetch['status'] >= 200 && $fetch['status'] < 300) {
+        $warnings[] = 'Slow page load time (' . $fetch['load_time_ms'] . ' ms) — Google uses page speed as a ranking factor; pages taking over 3 seconds to load are penalised and have higher visitor bounce rates. Investigate large images, render-blocking scripts, or slow server response times.';
     }
 
     return [
@@ -693,6 +711,11 @@ function leAuditBuildSummary(array $results): array
         $summary['avg_load_time_ms'] = (int) round($totalLoadTime / $summary['total_scanned']);
     }
 
+    // Add pages that were scanned but not stored (store_passed_pages = false)
+    $extraPassed = (int) ($results['passed_pages_count'] ?? 0);
+    $summary['passed_pages']  += $extraPassed;
+    $summary['total_scanned'] += $extraPassed;
+
     return $summary;
 }
 
@@ -742,11 +765,35 @@ function leAuditExportCsv(array $results): void
 // ── Handle actions ───────────────────────────────────────────────────────────
 [$queue, $results] = leAuditInitState($config);
 
+// Load persisted scan options (or defaults for new sessions / old sessions)
+$scanOptions = leAuditSessionGet('le_scan_options', []);
+if (empty($scanOptions)) {
+    $scanOptions = leAuditGetDefaultOptions();
+}
+// Back-fill any option keys added after the session was created
+foreach (leAuditGetDefaultOptions() as $k => $v) {
+    if (!array_key_exists($k, $scanOptions)) {
+        $scanOptions[$k] = $v;
+    }
+}
+
 $message = '';
 $action  = $input->getCmd('audit_action', '');
 
 if ($action !== '' && !Session::checkToken('post')) {
     $message = 'Invalid session token. Refresh the page and try again.';
+} elseif ($action === 'save_options') {
+    $scanOptions = [
+        'check_broken_internal' => (bool) $input->getInt('opt_broken_internal', 0),
+        'check_broken_external' => (bool) $input->getInt('opt_broken_external', 0),
+        'check_broken_images'   => (bool) $input->getInt('opt_broken_images',   0),
+        'check_seo'             => (bool) $input->getInt('opt_seo',             0),
+        'check_speed'           => (bool) $input->getInt('opt_speed',           0),
+        'check_alt_text'        => (bool) $input->getInt('opt_alt_text',        0),
+        'store_passed_pages'    => (bool) $input->getInt('opt_store_passed',    0),
+    ];
+    leAuditSessionSet('le_scan_options', $scanOptions);
+    $message = 'Scan options saved. These will apply to all future scan batches.';
 } elseif ($action === 'reset') {
     unset($_SESSION['le_queue'], $_SESSION['le_results']);
     [$queue, $results] = leAuditInitState($config);
@@ -787,19 +834,34 @@ if ($action !== '' && !Session::checkToken('post')) {
             continue;
         }
 
-        $result              = leAuditCheckUrl($normalized, $config);
+        $result              = leAuditCheckUrl($normalized, $config, $scanOptions);
         $discoveredLinks     = $result['discovered_links'];
         $discoveredExtLinks  = $result['discovered_external_links'] ?? [];
         $discoveredImages    = $result['discovered_images'] ?? [];
         unset($result['discovered_links'], $result['discovered_external_links'], $result['discovered_images']);
 
-        $results['items'][$normalized] = $result;
+        $hasIssues   = !empty($result['issues']);
+        $hasWarnings = !empty($result['warnings']);
+        $isPassing   = !$hasIssues && !$hasWarnings;
+
+        // Optionally skip storing passed items to reduce session size
+        if ($isPassing && !($scanOptions['store_passed_pages'] ?? false)) {
+            $results['passed_pages_count'] = ($results['passed_pages_count'] ?? 0) + 1;
+        } else {
+            $results['items'][$normalized] = $result;
+        }
         $queue['scanned'][$normalized] = true;
 
         $newUrlsFound += leAuditAddUrlsToQueue($queue, $discoveredLinks, $config, $normalized);
 
-        // Queue external links and images for HEAD-check
-        $extAssets = array_merge($discoveredExtLinks, $discoveredImages);
+        // Queue external links and images for HEAD-check (only if those checks are enabled)
+        $extAssets = [];
+        if ($scanOptions['check_broken_external'] ?? true) {
+            $extAssets = array_merge($extAssets, $discoveredExtLinks);
+        }
+        if ($scanOptions['check_broken_images'] ?? true) {
+            $extAssets = array_merge($extAssets, $discoveredImages);
+        }
         foreach ($extAssets as $extUrl) {
             if (!isset($queue['ext_seen'][$extUrl]) && count($queue['ext_seen']) < 10000) {
                 $queue['ext_pending'][]          = $extUrl;
@@ -809,21 +871,23 @@ if ($action !== '' && !Session::checkToken('post')) {
         }
 
         // Record this URL as a broken link if it came from a known source page
-        $isBroken = ($result['status'] === 0 || $result['status'] === 404
-                     || ($result['status'] >= 400 && $result['status'] < 600));
-        if ($isBroken) {
-            $referrer = $queue['referrers'][$normalized] ?? '';
-            if ($referrer !== '') {
-                if (!isset($results['broken_links'])) {
-                    $results['broken_links'] = [];
+        if ($scanOptions['check_broken_internal'] ?? true) {
+            $isBroken = ($result['status'] === 0 || $result['status'] === 404
+                         || ($result['status'] >= 400 && $result['status'] < 600));
+            if ($isBroken) {
+                $referrer = $queue['referrers'][$normalized] ?? '';
+                if ($referrer !== '') {
+                    if (!isset($results['broken_links'])) {
+                        $results['broken_links'] = [];
+                    }
+                    $results['broken_links'][] = [
+                        'source_page' => $referrer,
+                        'broken_url'  => $normalized,
+                        'status'      => $result['status'],
+                        'found_at'    => gmdate('c'),
+                        'link_type'   => 'internal',
+                    ];
                 }
-                $results['broken_links'][] = [
-                    'source_page' => $referrer,
-                    'broken_url'  => $normalized,
-                    'status'      => $result['status'],
-                    'found_at'    => gmdate('c'),
-                    'link_type'   => 'internal',
-                ];
             }
         }
 
@@ -1129,6 +1193,38 @@ $token   = Session::getFormToken();
             Private crawler for LottoExpert. Discovers internal URLs from the sitemap (including nested sitemap index files), crawls internal links, scans 10 URLs per batch, auto-continues without timeouts, and reports SEO, crawlability, metadata, canonical, H1, noindex, image alt, speed, and broken-page issues.
         [[/p]]
 
+        [[details style="margin-top:18px;"]]
+            [[summary style="cursor:pointer;font-weight:700;font-size:15px;color:#1a73e8;"]]&#9881; Scan Options (click to expand)[[/summary]]
+            [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>" style="margin-top:14px;"]]
+                [[input type="hidden" name="audit_action" value="save_options"]]
+                [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
+                [[p class="le-audit-small" style="margin:0 0 10px;"]]
+                    Select which checks to run. Disabling checks you don&rsquo;t need makes each batch faster and prevents gateway timeouts on large sites.
+                [[/p]]
+                [[div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px 24px;margin-bottom:14px;"]]
+                    <?php
+                    $opts = [
+                        ['opt_broken_internal', 'check_broken_internal', '🔗 Broken Internal Links',  'Flag your own pages that return 404/5xx'],
+                        ['opt_broken_external', 'check_broken_external', '🌐 Broken External Links',  'HEAD-check outbound links to other sites'],
+                        ['opt_broken_images',   'check_broken_images',   '🖼 Missing Images',          'HEAD-check image src URLs (logos, photos)'],
+                        ['opt_seo',             'check_seo',             '📄 SEO Checks',              'Title, meta description, canonical, H1, noindex'],
+                        ['opt_speed',           'check_speed',           '⚡ Page Speed',              'Flag pages loading over 3 seconds'],
+                        ['opt_alt_text',        'check_alt_text',        '♿ Alt Text',                'Flag images missing alt attribute'],
+                        ['opt_store_passed',    'store_passed_pages',    '✅ Store Passed Pages',      'Keep full data for pages with no issues (uses more memory)'],
+                    ];
+                    foreach ($opts as [$fieldName, $optKey, $label, $desc]) :
+                        $checked = ($scanOptions[$optKey] ?? false) ? ' checked' : '';
+                    ?>
+                    [[label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;"]]
+                        [[input type="checkbox" name="<?php echo $fieldName; ?>" value="1"<?php echo $checked; ?> style="margin-top:3px;flex-shrink:0;"]]
+                        [[span]][[strong]]<?php echo htmlspecialchars($label, ENT_QUOTES, 'UTF-8'); ?>[[/strong]] [[span class="le-audit-small"]]<?php echo htmlspecialchars($desc, ENT_QUOTES, 'UTF-8'); ?>[[/span]][[/span]]
+                    [[/label]]
+                    <?php endforeach; ?>
+                [[/div]]
+                [[button class="le-audit-button secondary" type="submit" style="font-size:14px;padding:8px 16px;"]]Save Options[[/button]]
+            [[/form]]
+        [[/details]]
+
         <?php if ($message !== '') : ?>
             [[div class="le-audit-alert"]]<?php echo nl2br(htmlspecialchars($message, ENT_QUOTES, 'UTF-8')); ?>[[/div]]
         <?php endif; ?>
@@ -1255,6 +1351,7 @@ $token   = Session::getFormToken();
         <?php endif; ?>
     [[/section]]
 
+    <?php if ($scanOptions['check_seo'] || $scanOptions['check_broken_internal'] || $scanOptions['check_speed'] || $scanOptions['check_alt_text']) : ?>
     [[section class="le-audit-card"]]
         [[h2]]Critical Issues[[/h2]]
         <?php if (empty($criticalItems)) : ?>
@@ -1291,7 +1388,9 @@ $token   = Session::getFormToken();
             [[/div]]
         <?php endif; ?>
     [[/section]]
+    <?php endif; ?>
 
+    <?php if ($scanOptions['check_broken_internal'] || $scanOptions['check_broken_external'] || $scanOptions['check_broken_images']) : ?>
     [[section class="le-audit-card"]]
         [[h2]]Broken Links &amp; Missing Images Found[[/h2]]
         [[p class="le-audit-small"]]
@@ -1376,7 +1475,9 @@ $token   = Session::getFormToken();
             [[/div]]
         <?php endif; ?>
     [[/section]]
+    <?php endif; ?>
 
+    <?php if ($scanOptions['check_seo'] || $scanOptions['check_speed'] || $scanOptions['check_alt_text']) : ?>
     [[section class="le-audit-card"]]
         [[h2]]Warnings[[/h2]]
         [[p class="le-audit-small"]]
@@ -1422,7 +1523,9 @@ $token   = Session::getFormToken();
             [[/div]]
         <?php endif; ?>
     [[/section]]
+    <?php endif; ?>
 
+    <?php if ($scanOptions['store_passed_pages'] ?? false) : ?>
     [[section class="le-audit-card"]]
         [[h2]]Passed Pages (no issues, no warnings) &mdash; showing up to 100[[/h2]]
         <?php if (empty($passedItems)) : ?>
@@ -1454,6 +1557,7 @@ $token   = Session::getFormToken();
             [[/div]]
         <?php endif; ?>
     [[/section]]
+    <?php endif; ?>
 
     [[section class="le-audit-card"]]
         [[h2]]CSV Export[[/h2]]
