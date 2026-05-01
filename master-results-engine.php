@@ -18,7 +18,7 @@ $input = $app->input;
 // ── Config ───────────────────────────────────────────────────────────────────
 $config = [
     'site_root'        => 'https://lottoexpert.net',
-    'batch_limit'      => 3,
+    'batch_limit'      => 10,
     'max_queue_size'   => 25000,
     'request_timeout'  => 4,
     'allowed_host'     => 'lottoexpert.net',
@@ -818,7 +818,7 @@ if ($action !== '' && !Session::checkToken('post')) {
              . 'Added ' . (int) $added . ' new URLs to queue'
              . ($alreadyQueued > 0 ? ' (' . $alreadyQueued . ' already queued).' : '.') . $diagText;
 } elseif ($action === 'scan_batch' || $action === 'scan_batch_ajax') {
-    @set_time_limit(120);
+    @set_time_limit(180);
     @ignore_user_abort(true);
 
     // Re-read scan options from the embedded batch form fields and re-persist them.
@@ -930,9 +930,9 @@ if ($action !== '' && !Session::checkToken('post')) {
         $processed++;
     }
 
-    // Check external links and images (up to 5 per batch via fast HEAD requests)
+    // Check external links and images (up to 10 per batch via fast HEAD requests)
     $extChecked = 0;
-    while ($extChecked < 5 && !empty($queue['ext_pending'])) {
+    while ($extChecked < 10 && !empty($queue['ext_pending'])) {
         $extUrl    = array_shift($queue['ext_pending']);
         $extStatus = leAuditHeadCheckUrl($extUrl);
         $isBroken  = ($extStatus === 0 || $extStatus === 404
@@ -956,9 +956,9 @@ if ($action !== '' && !Session::checkToken('post')) {
         $extChecked++;
     }
 
-    // HEAD-check internal links found on pages (up to 5 per batch; separate from main crawl)
+    // HEAD-check internal links found on pages (up to 10 per batch; separate from main crawl)
     $intLinkChecked = 0;
-    while ($intLinkChecked < 5 && !empty($queue['int_link_pending'])) {
+    while ($intLinkChecked < 10 && !empty($queue['int_link_pending'])) {
         $intLinkUrl = array_shift($queue['int_link_pending']);
 
         // Skip URLs already fully crawled — check_broken_internal handles those
@@ -1840,7 +1840,7 @@ $token   = Session::getFormToken();
                     if (sb) { sb.style.display = 'none'; }
                     return;
                 }
-                setTimeout(leRunAjaxBatch, 800);
+                setTimeout(leRunAjaxBatch, 300);
             })
             .catch(function () {
                 // On any error (504, network failure, JSON parse) wait and retry
