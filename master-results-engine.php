@@ -817,7 +817,7 @@ if ($action !== '' && !Session::checkToken('post')) {
     $message = 'Sitemap discovery complete. Found ' . count($sitemapUrls) . ' page URLs. '
              . 'Added ' . (int) $added . ' new URLs to queue'
              . ($alreadyQueued > 0 ? ' (' . $alreadyQueued . ' already queued).' : '.') . $diagText;
-} elseif ($action === 'scan_batch') {
+} elseif ($action === 'scan_batch' || $action === 'scan_batch_ajax') {
     @set_time_limit(120);
     @ignore_user_abort(true);
 
@@ -1004,6 +1004,30 @@ if ($action !== '' && !Session::checkToken('post')) {
              . (int) $extPendingAfter . ' still queued. '
              . (int) $intLinkChecked . ' internal link(s) HEAD-checked, '
              . (int) $intLinkPendingAfter . ' still queued.';
+
+    if ($action === 'scan_batch_ajax') {
+        $ajaxPendingCount = count($queue['pending'] ?? []);
+        $ajaxSeenCount    = count($queue['seen']    ?? []);
+        $ajaxScannedCount = count($queue['scanned'] ?? []);
+        $ajaxProgressPct  = ($ajaxSeenCount > 0)
+            ? min(100, (int) round(($ajaxScannedCount / $ajaxSeenCount) * 100))
+            : 0;
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store, no-cache, must-revalidate');
+        }
+        while (ob_get_level() > 0) { ob_end_clean(); }
+        echo json_encode([
+            'ok'           => true,
+            'pending'      => $ajaxPendingCount,
+            'scanned'      => $ajaxScannedCount,
+            'seen'         => $ajaxSeenCount,
+            'progress_pct' => $ajaxProgressPct,
+            'message'      => $message,
+            'done'         => ($ajaxPendingCount === 0),
+        ]);
+        exit;
+    }
 } elseif ($action === 'export_csv') {
     $results['summary'] = leAuditBuildSummary($results);
     leAuditExportCsv($results); // streams CSV and exits
@@ -1342,9 +1366,9 @@ $token   = Session::getFormToken();
     [[section class="le-audit-card"]]
         [[h2]]Scan Progress[[/h2]]
         [[div class="le-audit-progress-bar-wrap"]]
-            [[div class="le-audit-progress-bar" style="width:<?php echo (int) $progressPct; ?>%"]][[/div]]
+            [[div id="leProgressBar" class="le-audit-progress-bar" style="width:<?php echo (int) $progressPct; ?>%"]][[/div]]
         [[/div]]
-        [[p class="le-audit-progress-label"]]
+        [[p id="leProgressLabel" class="le-audit-progress-label"]]
             <?php echo (int) $progressPct; ?>% complete &mdash;
             <?php echo (int) $scannedCount; ?> scanned of
             <?php echo (int) $seenCount; ?> discovered &mdash;
@@ -1768,18 +1792,78 @@ $token   = Session::getFormToken();
         });
     }
 
+    // ── Progress bar live update ───────────────────────────────────────────
+    function leUpdateProgress(pct, scanned, seen, pendingN) {
+        var bar   = document.getElementById('leProgressBar');
+        var label = document.getElementById('leProgressLabel');
+        if (bar)   { bar.style.width = pct + '%'; }
+        if (label) {
+            label.textContent = pct + '% complete \u2014 '
+                + scanned + ' scanned of '
+                + seen    + ' discovered \u2014 '
+                + pendingN + ' pending';
+        }
+    }
+
+    // ── AJAX batch runner ──────────────────────────────────────────────────
+    var runningBanner = document.getElementById('leAutorunRunning');
+    var doneBanner    = document.getElementById('leAutorunDone');
+    var pendingSpan   = document.getElementById('leAutorunPending');
+
+    function leRunAjaxBatch() {
+        if (sessionStorage.getItem(AUTORUN_KEY) !== '1') { return; }
+        var ajaxForm = document.getElementById('leAutoScanForm');
+        if (!ajaxForm) { return; }
+        var opts = leLoadOpts();
+        var fd   = new FormData(ajaxForm);
+        fd.set('audit_action', 'scan_batch_ajax');
+        Object.keys(opts).forEach(function (k) {
+            fd.set('batch_opt_' + k, opts[k] ? '1' : '0');
+        });
+        fetch(ajaxForm.action, { method: 'POST', body: fd, credentials: 'same-origin' })
+            .then(function (r) {
+                if (!r.ok) { throw new Error('HTTP ' + r.status); }
+                return r.json();
+            })
+            .then(function (data) {
+                leUpdateProgress(data.progress_pct, data.scanned, data.seen, data.pending);
+                if (pendingSpan) { pendingSpan.textContent = data.pending; }
+                if (sessionStorage.getItem(AUTORUN_KEY) !== '1') { return; }
+                if (data.done || data.pending <= 0) {
+                    sessionStorage.removeItem(AUTORUN_KEY);
+                    sessionStorage.removeItem(SCROLL_KEY);
+                    if (runningBanner) { runningBanner.style.display = 'none'; }
+                    if (doneBanner)    { doneBanner.style.display = ''; }
+                    var ab = document.getElementById('leBtnAutoScan');
+                    var sb = document.getElementById('leBtnStopScan');
+                    if (ab) { ab.innerHTML = 'Auto Scan Until Finished'; ab.disabled = false; }
+                    if (sb) { sb.style.display = 'none'; }
+                    return;
+                }
+                setTimeout(leRunAjaxBatch, 800);
+            })
+            .catch(function () {
+                // On any error (504, network failure, JSON parse) wait and retry
+                if (sessionStorage.getItem(AUTORUN_KEY) === '1') {
+                    setTimeout(leRunAjaxBatch, 3000);
+                }
+            });
+    }
+
     // ── "Auto Scan Until Finished" button ─────────────────────────────────
     var autoBtn = document.getElementById('leBtnAutoScan');
     if (autoBtn) {
         autoBtn.addEventListener('click', function () {
             sessionStorage.setItem(AUTORUN_KEY, '1');
-            sessionStorage.setItem(SCROLL_KEY, window.scrollY);
-            this.innerHTML = 'Auto Scan Started\u2026';
+            this.innerHTML = 'Auto Scan Running\u2026';
             this.disabled = true;
-            var stopBtn = document.getElementById('leBtnStopScan');
-            if (stopBtn) { stopBtn.style.display = ''; }
-            var form = document.getElementById('leAutoScanForm');
-            if (form) { leSubmitBatchForm(form); }
+            var sb = document.getElementById('leBtnStopScan');
+            if (sb) { sb.style.display = ''; }
+            if (runningBanner) {
+                runningBanner.style.display = '';
+                if (pendingSpan) { pendingSpan.textContent = pending; }
+            }
+            leRunAjaxBatch();
         });
     }
 
@@ -1792,6 +1876,8 @@ $token   = Session::getFormToken();
             this.style.display = 'none';
             var running = document.getElementById('leAutorunRunning');
             if (running) { running.style.display = 'none'; }
+            var ab = document.getElementById('leBtnAutoScan');
+            if (ab) { ab.innerHTML = 'Auto Scan Until Finished'; ab.disabled = false; }
         });
     }
 
@@ -1802,31 +1888,18 @@ $token   = Session::getFormToken();
         return confirm('Stop all scanning and clear the pending queue? Results collected so far will be kept.');
     };
 
-    // ── Auto-run loop ──────────────────────────────────────────────────────
-    var runningBanner = document.getElementById('leAutorunRunning');
-    var doneBanner    = document.getElementById('leAutorunDone');
-    var pendingSpan   = document.getElementById('leAutorunPending');
-
+    // ── On page load: restart AJAX loop if auto-scan was interrupted ───────
     if (sessionStorage.getItem(AUTORUN_KEY) === '1') {
-        // Restore scroll position from before the last batch submit
         var savedY = parseInt(sessionStorage.getItem(SCROLL_KEY) || '0', 10);
         if (savedY > 0) { window.scrollTo(0, savedY); }
-
         if (pending > 0) {
-            if (stopBtn) { stopBtn.style.display = ''; }
+            if (stopBtn)  { stopBtn.style.display = ''; }
+            if (autoBtn)  { autoBtn.innerHTML = 'Auto Scan Running\u2026'; autoBtn.disabled = true; }
             if (runningBanner) {
                 runningBanner.style.display = '';
                 if (pendingSpan) { pendingSpan.textContent = pending; }
             }
-            setTimeout(function () {
-                var form = document.getElementById('leAutoScanForm');
-                if (form) {
-                    sessionStorage.setItem(SCROLL_KEY, window.scrollY);
-                    var btn = form.querySelector('button[type="submit"]');
-                    if (btn) { btn.innerHTML = 'Working\u2026'; btn.disabled = true; }
-                    leSubmitBatchForm(form);
-                }
-            }, 1500);
+            setTimeout(leRunAjaxBatch, 1500);
         } else {
             sessionStorage.removeItem(AUTORUN_KEY);
             sessionStorage.removeItem(SCROLL_KEY);
