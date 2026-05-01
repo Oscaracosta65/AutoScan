@@ -134,12 +134,15 @@ function leAuditInitState(array $config): array
     if (empty($queue)) {
         $home  = leAuditNormalizeUrl($config['site_root'] . '/', $config);
         $queue = [
-            'created_at' => gmdate('c'),
-            'updated_at' => gmdate('c'),
-            'pending'    => [$home],
-            'seen'       => [$home => true],
-            'scanned'    => [],
-            'referrers'  => [],
+            'created_at'    => gmdate('c'),
+            'updated_at'    => gmdate('c'),
+            'pending'       => [$home],
+            'seen'          => [$home => true],
+            'scanned'       => [],
+            'referrers'     => [],
+            'ext_pending'   => [],
+            'ext_seen'      => [],
+            'ext_referrers' => [],
         ];
         leAuditSessionSet('le_queue', $queue);
     }
@@ -323,6 +326,35 @@ function leAuditHeadCheckUrl(string $url): int
     return $status;
 }
 
+function leAuditExtractImages(string $html, string $baseUrl, array $config): array
+{
+    $images = [];
+    if (!preg_match_all('#<img\s[^>]*src=["\']([^"\']+)["\']#i', $html, $m)) {
+        return $images;
+    }
+    foreach ($m[1] as $src) {
+        $src = html_entity_decode(trim($src), ENT_QUOTES, 'UTF-8');
+        if ($src === '' || strpos($src, 'data:') === 0) {
+            continue;
+        }
+        if (strpos($src, '//') === 0) {
+            $src = 'https:' . $src;
+        } elseif (strpos($src, '/') === 0) {
+            $src = rtrim($config['site_root'], '/') . $src;
+        } elseif (!preg_match('#^https?://#i', $src)) {
+            $src = rtrim($baseUrl, '/') . '/' . ltrim($src, '/');
+        }
+        if (!preg_match('#^https?://#i', $src)) {
+            continue;
+        }
+        $images[] = $src;
+        if (count($images) >= 30) {
+            break; // cap per page to avoid queue bloat
+        }
+    }
+    return array_values(array_unique($images));
+}
+
 function leAuditCountImagesWithoutAlt(string $html): int
 {
     $count = 0;
@@ -446,8 +478,9 @@ function leAuditCheckUrl(string $url, array $config): array
         'issues'                  => $issues,
         'warnings'                => $warnings,
         'scanned_at'              => gmdate('c'),
-        'discovered_links'        => leAuditExtractLinks($html, $url, $config),
-        'discovered_images'       => [],
+        'discovered_links'          => leAuditExtractLinks($html, $url, $config),
+        'discovered_external_links' => leAuditExtractExternalLinks($html, $config),
+        'discovered_images'         => leAuditExtractImages($html, $url, $config),
     ];
 }
 
@@ -737,6 +770,11 @@ if ($action !== '' && !Session::checkToken('post')) {
     $newUrlsFound = 0;
     $batchLimit   = (int) $config['batch_limit'];
 
+    // Ensure ext queue fields exist for sessions created before this feature
+    if (!isset($queue['ext_pending']))   { $queue['ext_pending']   = []; }
+    if (!isset($queue['ext_seen']))      { $queue['ext_seen']      = []; }
+    if (!isset($queue['ext_referrers'])) { $queue['ext_referrers'] = []; }
+
     while ($processed < $batchLimit && !empty($queue['pending'])) {
         $url        = array_shift($queue['pending']);
         $normalized = leAuditNormalizeUrl($url, $config);
@@ -749,15 +787,26 @@ if ($action !== '' && !Session::checkToken('post')) {
             continue;
         }
 
-        $result           = leAuditCheckUrl($normalized, $config);
-        $discoveredLinks  = $result['discovered_links'];
-        unset($result['discovered_links']);
-        unset($result['discovered_images']);
+        $result              = leAuditCheckUrl($normalized, $config);
+        $discoveredLinks     = $result['discovered_links'];
+        $discoveredExtLinks  = $result['discovered_external_links'] ?? [];
+        $discoveredImages    = $result['discovered_images'] ?? [];
+        unset($result['discovered_links'], $result['discovered_external_links'], $result['discovered_images']);
 
         $results['items'][$normalized] = $result;
         $queue['scanned'][$normalized] = true;
 
         $newUrlsFound += leAuditAddUrlsToQueue($queue, $discoveredLinks, $config, $normalized);
+
+        // Queue external links and images for HEAD-check
+        $extAssets = array_merge($discoveredExtLinks, $discoveredImages);
+        foreach ($extAssets as $extUrl) {
+            if (!isset($queue['ext_seen'][$extUrl]) && count($queue['ext_seen']) < 10000) {
+                $queue['ext_pending'][]          = $extUrl;
+                $queue['ext_seen'][$extUrl]      = true;
+                $queue['ext_referrers'][$extUrl] = $normalized;
+            }
+        }
 
         // Record this URL as a broken link if it came from a known source page
         $isBroken = ($result['status'] === 0 || $result['status'] === 404
@@ -773,11 +822,38 @@ if ($action !== '' && !Session::checkToken('post')) {
                     'broken_url'  => $normalized,
                     'status'      => $result['status'],
                     'found_at'    => gmdate('c'),
+                    'link_type'   => 'internal',
                 ];
             }
         }
 
         $processed++;
+    }
+
+    // Check external links and images (up to 5 per batch via fast HEAD requests)
+    $extChecked = 0;
+    while ($extChecked < 5 && !empty($queue['ext_pending'])) {
+        $extUrl    = array_shift($queue['ext_pending']);
+        $extStatus = leAuditHeadCheckUrl($extUrl);
+        $isBroken  = ($extStatus === 0 || $extStatus === 404
+                      || ($extStatus >= 400 && $extStatus < 600));
+        if ($isBroken) {
+            $extReferrer = $queue['ext_referrers'][$extUrl] ?? '';
+            if ($extReferrer !== '') {
+                if (!isset($results['broken_links'])) {
+                    $results['broken_links'] = [];
+                }
+                $isImage = (bool) preg_match('#\.(jpg|jpeg|png|gif|webp|svg|ico|bmp)(\?.*)?$#i', $extUrl);
+                $results['broken_links'][] = [
+                    'source_page' => $extReferrer,
+                    'broken_url'  => $extUrl,
+                    'status'      => $extStatus,
+                    'found_at'    => gmdate('c'),
+                    'link_type'   => $isImage ? 'image' : 'external',
+                ];
+            }
+        }
+        $extChecked++;
     }
 
     $results['summary']    = leAuditBuildSummary($results);
@@ -786,10 +862,13 @@ if ($action !== '' && !Session::checkToken('post')) {
     leAuditSessionSet('le_queue', $queue);
     leAuditSessionSet('le_results', $results);
 
-    $pendingAfter = count($queue['pending']);
-    $message = 'Batch complete. Scanned ' . (int) $processed . ' URLs. '
-             . (int) $newUrlsFound . ' new URLs discovered. '
-             . (int) $pendingAfter . ' URLs still pending.';
+    $pendingAfter    = count($queue['pending']);
+    $extPendingAfter = count($queue['ext_pending'] ?? []);
+    $message = 'Batch complete. Scanned ' . (int) $processed . ' pages. '
+             . (int) $newUrlsFound . ' new pages discovered. '
+             . (int) $pendingAfter . ' pages still pending. '
+             . (int) $extChecked . ' external asset(s) checked, '
+             . (int) $extPendingAfter . ' still queued.';
 } elseif ($action === 'export_csv') {
     $results['summary'] = leAuditBuildSummary($results);
     leAuditExportCsv($results); // streams CSV and exits
@@ -1114,7 +1193,7 @@ $token   = Session::getFormToken();
             [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['slow_pages']; ?>[[/strong]][[span]]Slow Pages (&gt;3 s)[[/span]][[/div]]
             [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['images_missing_alt']; ?>[[/strong]][[span]]Pages w/ Missing Alt[[/span]][[/div]]
             [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['avg_load_time_ms']; ?> ms[[/strong]][[span]]Avg Load Time[[/span]][[/div]]
-            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['broken_links_total']; ?>[[/strong]][[span]]Broken Links Found[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['broken_links_total']; ?>[[/strong]][[span]]Broken Links &amp; Missing Images[[/span]][[/div]]
         [[/div]]
     [[/section]]
 
@@ -1214,30 +1293,32 @@ $token   = Session::getFormToken();
     [[/section]]
 
     [[section class="le-audit-card"]]
-        [[h2]]Broken Links Found[[/h2]]
+        [[h2]]Broken Links &amp; Missing Images Found[[/h2]]
         [[p class="le-audit-small"]]
-            These are links that the crawler found on your site and tried to open, but received an error response.
-            Each row tells you two things: (1) the <strong>Page On Your Site</strong> that contains the bad link &mdash; this is where you need to go to edit or remove the link &mdash; and (2) the <strong>Broken Link URL</strong> itself, i.e. the address that is returning an error.
+            These are links and images that the crawler found on your site but that returned an error when fetched.
+            The <strong>Type</strong> column tells you what kind of problem it is: an internal link on your own site that is broken, a link to an external website that is returning an error, or an image file (such as a logo or photo) that could not be loaded.
+            The <strong>Page On Your Site</strong> column shows exactly which page you need to edit to fix or remove the bad link or image.
             The <strong>Error Code</strong> explains what kind of failure occurred (see key below).
         [[/p]]
         [[p class="le-audit-small"]]
             [[strong]]Error code key:[[/strong]]
-            [[strong]]404[[/strong]] = Page Not Found (the URL no longer exists) &mdash;
+            [[strong]]404[[/strong]] = Not Found (the file or page no longer exists) &mdash;
             [[strong]]410[[/strong]] = Gone (permanently deleted) &mdash;
             [[strong]]500[[/strong]] = Server Error (the destination server crashed) &mdash;
             [[strong]]503[[/strong]] = Service Unavailable (server overloaded or down) &mdash;
             [[strong]]0[[/strong]] = Connection Failed (the domain could not be reached at all).
         [[/p]]
         <?php if (empty($brokenLinkItems)) : ?>
-            [[p]][[span class="le-audit-pill pass"]]PASS[[/span]] No broken internal links detected yet.[[/p]]
+            [[p]][[span class="le-audit-pill pass"]]PASS[[/span]] No broken links or missing images detected yet.[[/p]]
         <?php else : ?>
             [[div class="le-audit-table-wrap"]]
                 [[table class="le-audit-table"]]
                     [[thead]]
                         [[tr]]
+                            [[th]]Type[[/th]]
                             [[th]]Error Code[[/th]]
-                            [[th]]Page On Your Site (go here to fix or remove the link)[[/th]]
-                            [[th]]Broken Link URL (this is the bad link that needs fixing)[[/th]]
+                            [[th]]Page On Your Site (go here to fix or remove the problem)[[/th]]
+                            [[th]]Broken URL / Missing Image (the bad address)[[/th]]
                             [[th]]When Detected[[/th]]
                         [[/tr]]
                     [[/thead]]
@@ -1250,7 +1331,7 @@ $token   = Session::getFormToken();
                                     $statusCode === 400 => '400 – Bad Request',
                                     $statusCode === 401 => '401 – Unauthorised',
                                     $statusCode === 403 => '403 – Forbidden',
-                                    $statusCode === 404 => '404 – Page Not Found',
+                                    $statusCode === 404 => '404 – Not Found',
                                     $statusCode === 405 => '405 – Method Not Allowed',
                                     $statusCode === 410 => '410 – Gone (Deleted)',
                                     $statusCode === 429 => '429 – Too Many Requests',
@@ -1267,8 +1348,15 @@ $token   = Session::getFormToken();
                                     $ts = strtotime($bl['found_at']);
                                     $foundAt = $ts ? date('d M Y, H:i', $ts) . ' UTC' : $bl['found_at'];
                                 }
+                                $linkType = $bl['link_type'] ?? 'internal';
+                                $typeLabel = match($linkType) {
+                                    'image'    => '🖼 Missing Image',
+                                    'external' => '🔗 External Link',
+                                    default    => '🔗 Internal Link',
+                                };
                             ?>
                             [[tr]]
+                                [[td]]<?php echo htmlspecialchars($typeLabel, ENT_QUOTES, 'UTF-8'); ?>[[/td]]
                                 [[td]][[span class="le-audit-pill critical"]]<?php echo htmlspecialchars($statusLabel, ENT_QUOTES, 'UTF-8'); ?>[[/span]][[/td]]
                                 [[td class="le-audit-url"]]
                                     [[a href="<?php echo htmlspecialchars($bl['source_page'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
