@@ -332,39 +332,39 @@ function leAuditCheckUrl(string $url, array $config): array
         if ($title === '') {
             $issues[] = 'Missing title tag';
         } elseif ($titleLen < 10) {
-            $warnings[] = 'Title too short (' . $titleLen . ' chars)';
+            $warnings[] = 'Page title is too short (' . $titleLen . ' chars) — Google recommends 50–70 characters. A very short title gives search engines almost no information about the page topic. Expand your title to clearly describe the page content.';
         } elseif ($titleLen > 70) {
-            $warnings[] = 'Title too long (' . $titleLen . ' chars)';
+            $warnings[] = 'Page title is too long (' . $titleLen . ' chars) — Google typically truncates titles longer than 70 characters in search results, cutting off part of your message. Edit the title to 50–70 characters.';
         }
 
         if ($description === '') {
             $issues[] = 'Missing meta description';
         } elseif ($descLen < 50) {
-            $warnings[] = 'Meta description too short (' . $descLen . ' chars)';
+            $warnings[] = 'Meta description is too short (' . $descLen . ' chars) — Search engines use this text as the snippet shown under your page title in results. A snippet under 50 characters is too brief to attract clicks. Write a 50–165 character description that summarises the page and encourages users to click.';
         } elseif ($descLen > 165) {
-            $warnings[] = 'Meta description too long (' . $descLen . ' chars)';
+            $warnings[] = 'Meta description is too long (' . $descLen . ' chars) — Google will cut off descriptions longer than ~165 characters, leaving an incomplete sentence in search results. Trim your description to under 165 characters.';
         }
 
         if ($canonical === '') {
-            $warnings[] = 'Missing canonical tag';
+            $warnings[] = 'Missing canonical tag — A canonical tag (<link rel="canonical" href="…">) tells search engines which version of this URL is the "official" one, preventing duplicate-content penalties when the same page is reachable via multiple URLs. Add a self-referencing canonical tag to the <head> of this page.';
         }
 
         if ($h1Count === 0) {
             $issues[] = 'Missing H1 tag';
         } elseif ($h1Count > 1) {
-            $warnings[] = 'Multiple H1 tags (' . $h1Count . ')';
+            $warnings[] = 'Multiple H1 headings found (' . $h1Count . ') — Each page should have exactly one H1 tag that clearly states the main topic. Having several H1s confuses search engines about the primary subject. Keep one H1 and use H2/H3 for sub-headings.';
         }
 
         if ($noindex) {
-            $warnings[] = 'Page has noindex directive';
+            $warnings[] = 'Page has a noindex directive — This page is actively instructing search engines NOT to index it (via a <meta name="robots" content="noindex"> tag or an X-Robots-Tag HTTP header). If this is unintentional, remove the noindex directive so the page can appear in search results.';
         }
 
         if ($imgsNoAlt > 0) {
-            $warnings[] = $imgsNoAlt . ' image(s) missing alt text';
+            $warnings[] = $imgsNoAlt . ' image(s) are missing alt text — The alt attribute on an <img> tag describes the image to search engines and screen-reader users. Missing alt text harms SEO and accessibility. Add a short, descriptive alt="…" to every image on this page.';
         }
 
         if ($fetch['load_time_ms'] > 3000) {
-            $warnings[] = 'Slow load time (' . $fetch['load_time_ms'] . ' ms)';
+            $warnings[] = 'Slow page load time (' . $fetch['load_time_ms'] . ' ms) — Google uses page speed as a ranking factor; pages taking over 3 seconds to load are penalised and have higher visitor bounce rates. Investigate large images, render-blocking scripts, or slow server response times.';
         }
     }
 
@@ -1195,6 +1195,9 @@ $token   = Session::getFormToken();
 
     [[section class="le-audit-card"]]
         [[h2]]Warnings[[/h2]]
+        [[p class="le-audit-small"]]
+            These pages loaded successfully but have one or more SEO or performance issues that should be fixed. Each warning below explains exactly what the problem is and what you need to do to correct it.
+        [[/p]]
         <?php if (empty($warningItems)) : ?>
             [[p]][[span class="le-audit-pill pass"]]PASS[[/span]] No warnings found yet.[[/p]]
         <?php else : ?>
@@ -1202,7 +1205,7 @@ $token   = Session::getFormToken();
                 [[table class="le-audit-table"]]
                     [[thead]]
                         [[tr]]
-                            [[th]]Status[[/th]][[th]]URL[[/th]][[th]]Warnings[[/th]]
+                            [[th]]Status[[/th]][[th]]Page URL[[/th]][[th]]Warning Details (what is wrong and how to fix it)[[/th]]
                             [[th]]Title Length[[/th]][[th]]Desc. Length[[/th]]
                             [[th]]H1 Count[[/th]][[th]]Imgs No Alt[[/th]][[th]]Load[[/th]]
                         [[/tr]]
@@ -1216,7 +1219,13 @@ $token   = Session::getFormToken();
                                         <?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>
                                     [[/a]]
                                 [[/td]]
-                                [[td]]<?php echo htmlspecialchars(implode(' | ', $item['warnings']), ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td]]
+                                    [[ul style="margin:0;padding-left:18px;"]]
+                                        <?php foreach ($item['warnings'] as $w) : ?>
+                                            [[li]]<?php echo htmlspecialchars($w, ENT_QUOTES, 'UTF-8'); ?>[[/li]]
+                                        <?php endforeach; ?>
+                                    [[/ul]]
+                                [[/td]]
                                 [[td]]<?php echo (int) $item['title_length']; ?>[[/td]]
                                 [[td]]<?php echo (int) $item['meta_description_length']; ?>[[/td]]
                                 [[td]]<?php echo (int) $item['h1_count']; ?>[[/td]]
