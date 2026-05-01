@@ -1628,6 +1628,7 @@ $token   = Session::getFormToken();
 [[script]]
 (function () {
     var AUTORUN_KEY = 'leAuditAutorun';
+    var SCROLL_KEY  = 'leAuditScrollY';
     var meta    = document.getElementById('leAuditMeta');
     var pending = meta ? parseInt(meta.getAttribute('data-pending') || '0', 10) : 0;
 
@@ -1635,7 +1636,7 @@ $token   = Session::getFormToken();
     var buttons = document.querySelectorAll('.le-audit-button');
     for (var i = 0; i < buttons.length; i++) {
         buttons[i].addEventListener('click', function () {
-            if (!this.className.match(/danger/) && this.id !== 'leBtnAutoScan') {
+            if (!this.className.match(/danger/) && this.id !== 'leBtnAutoScan' && this.id !== 'leBtnStopScan') {
                 this.innerHTML = 'Working\u2026';
                 this.disabled = true;
             }
@@ -1647,10 +1648,25 @@ $token   = Session::getFormToken();
     if (autoBtn) {
         autoBtn.addEventListener('click', function () {
             sessionStorage.setItem(AUTORUN_KEY, '1');
+            sessionStorage.setItem(SCROLL_KEY, window.scrollY);
             this.innerHTML = 'Auto Scan Started\u2026';
             this.disabled = true;
+            var stopBtn = document.getElementById('leBtnStopScan');
+            if (stopBtn) { stopBtn.style.display = ''; }
             var form = document.getElementById('leAutoScanForm');
             if (form) { form.submit(); }
+        });
+    }
+
+    // ── "Stop Auto Scan" button ────────────────────────────────────────────
+    var stopBtn = document.getElementById('leBtnStopScan');
+    if (stopBtn) {
+        stopBtn.addEventListener('click', function () {
+            sessionStorage.removeItem(AUTORUN_KEY);
+            sessionStorage.removeItem(SCROLL_KEY);
+            this.style.display = 'none';
+            var running = document.getElementById('leAutorunRunning');
+            if (running) { running.style.display = 'none'; }
         });
     }
 
@@ -1660,7 +1676,12 @@ $token   = Session::getFormToken();
     var pendingSpan   = document.getElementById('leAutorunPending');
 
     if (sessionStorage.getItem(AUTORUN_KEY) === '1') {
+        // Restore scroll position from before the last batch submit
+        var savedY = parseInt(sessionStorage.getItem(SCROLL_KEY) || '0', 10);
+        if (savedY > 0) { window.scrollTo(0, savedY); }
+
         if (pending > 0) {
+            if (stopBtn) { stopBtn.style.display = ''; }
             if (runningBanner) {
                 runningBanner.style.display = '';
                 if (pendingSpan) { pendingSpan.textContent = pending; }
@@ -1668,6 +1689,8 @@ $token   = Session::getFormToken();
             setTimeout(function () {
                 var form = document.getElementById('leAutoScanForm');
                 if (form) {
+                    // Save current scroll position right before submitting
+                    sessionStorage.setItem(SCROLL_KEY, window.scrollY);
                     var btn = form.querySelector('button[type="submit"]');
                     if (btn) { btn.innerHTML = 'Working\u2026'; btn.disabled = true; }
                     form.submit();
@@ -1675,6 +1698,7 @@ $token   = Session::getFormToken();
             }, 1500);
         } else {
             sessionStorage.removeItem(AUTORUN_KEY);
+            sessionStorage.removeItem(SCROLL_KEY);
             if (doneBanner) { doneBanner.style.display = ''; }
         }
     }
