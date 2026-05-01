@@ -262,6 +262,67 @@ function leAuditExtractLinks(string $html, string $baseUrl, array $config): arra
     return array_values(array_unique($links));
 }
 
+function leAuditExtractExternalLinks(string $html, array $config): array
+{
+    $links = [];
+    if (!preg_match_all('#<a\s[^>]*href=["\']([^"\']+)["\']#i', $html, $m)) {
+        return $links;
+    }
+    foreach ($m[1] as $href) {
+        $href = html_entity_decode(trim($href), ENT_QUOTES, 'UTF-8');
+        if ($href === '') {
+            continue;
+        }
+        if (strpos($href, '//') === 0) {
+            $href = 'https:' . $href;
+        }
+        if (!preg_match('#^https?://#i', $href)) {
+            continue;
+        }
+        $parts = parse_url($href);
+        if (empty($parts['host'])) {
+            continue;
+        }
+        $host = strtolower($parts['host']);
+        if (in_array($host, $config['allowed_hosts'], true)) {
+            continue; // internal link — handled by the main crawler
+        }
+        $clean = $parts['scheme'] . '://' . $parts['host'] . ($parts['path'] ?? '/');
+        if (!empty($parts['query'])) {
+            $clean .= '?' . $parts['query'];
+        }
+        $links[] = $clean;
+        if (count($links) >= 50) {
+            break; // cap per page to avoid queue bloat
+        }
+    }
+    return array_values(array_unique($links));
+}
+
+function leAuditHeadCheckUrl(string $url): int
+{
+    if (!function_exists('curl_init')) {
+        return 0;
+    }
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL            => $url,
+        CURLOPT_NOBODY         => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS      => 5,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT        => 5,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => 0,
+        CURLOPT_USERAGENT      => 'LottoExpert Private Audit Scanner/2.0',
+    ]);
+    curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $status;
+}
+
 function leAuditCountImagesWithoutAlt(string $html): int
 {
     $count = 0;
