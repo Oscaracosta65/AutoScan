@@ -49,8 +49,9 @@ $config = [
 function leAuditGetDefaultOptions(): array
 {
     return [
-        'check_broken_internal' => true,  // record 404/5xx internal pages as broken links
-        'check_broken_external' => true,  // HEAD-check external links found on pages
+        'check_broken_internal'       => true,  // record 404/5xx internal pages as broken links
+        'check_broken_internal_links' => true,  // HEAD-check internal links found on pages (proactive, separate from crawl)
+        'check_broken_external'       => true,  // HEAD-check external links found on pages
         'check_broken_images'   => true,  // HEAD-check image src URLs found on pages
         'check_seo'             => true,  // title, meta description, canonical, H1, noindex
         'check_speed'           => true,  // flag pages loading > 3 s
@@ -784,8 +785,9 @@ if ($action !== '' && !Session::checkToken('post')) {
     $message = 'Invalid session token. Refresh the page and try again.';
 } elseif ($action === 'save_options') {
     $scanOptions = [
-        'check_broken_internal' => (bool) $input->getInt('opt_broken_internal', 0),
-        'check_broken_external' => (bool) $input->getInt('opt_broken_external', 0),
+        'check_broken_internal'       => (bool) $input->getInt('opt_broken_internal',       0),
+        'check_broken_internal_links' => (bool) $input->getInt('opt_broken_internal_links', 0),
+        'check_broken_external'       => (bool) $input->getInt('opt_broken_external',       0),
         'check_broken_images'   => (bool) $input->getInt('opt_broken_images',   0),
         'check_seo'             => (bool) $input->getInt('opt_seo',             0),
         'check_speed'           => (bool) $input->getInt('opt_speed',           0),
@@ -818,9 +820,14 @@ if ($action !== '' && !Session::checkToken('post')) {
     $batchLimit   = (int) $config['batch_limit'];
 
     // Ensure ext queue fields exist for sessions created before this feature
-    if (!isset($queue['ext_pending']))   { $queue['ext_pending']   = []; }
-    if (!isset($queue['ext_seen']))      { $queue['ext_seen']      = []; }
-    if (!isset($queue['ext_referrers'])) { $queue['ext_referrers'] = []; }
+    if (!isset($queue['ext_pending']))        { $queue['ext_pending']        = []; }
+    if (!isset($queue['ext_seen']))           { $queue['ext_seen']           = []; }
+    if (!isset($queue['ext_referrers']))      { $queue['ext_referrers']      = []; }
+
+    // Ensure int-link HEAD-check queue fields exist for sessions created before this feature
+    if (!isset($queue['int_link_pending']))   { $queue['int_link_pending']   = []; }
+    if (!isset($queue['int_link_seen']))      { $queue['int_link_seen']      = []; }
+    if (!isset($queue['int_link_referrers'])) { $queue['int_link_referrers'] = []; }
 
     while ($processed < $batchLimit && !empty($queue['pending'])) {
         $url        = array_shift($queue['pending']);
@@ -867,6 +874,17 @@ if ($action !== '' && !Session::checkToken('post')) {
                 $queue['ext_pending'][]          = $extUrl;
                 $queue['ext_seen'][$extUrl]      = true;
                 $queue['ext_referrers'][$extUrl] = $normalized;
+            }
+        }
+
+        // Queue internal links for dedicated HEAD-check (proactive; separate from main crawl)
+        if ($scanOptions['check_broken_internal_links'] ?? true) {
+            foreach ($discoveredLinks as $intLinkUrl) {
+                if (!isset($queue['int_link_seen'][$intLinkUrl]) && count($queue['int_link_seen']) < 20000) {
+                    $queue['int_link_pending'][]              = $intLinkUrl;
+                    $queue['int_link_seen'][$intLinkUrl]      = true;
+                    $queue['int_link_referrers'][$intLinkUrl] = $normalized;
+                }
             }
         }
 
@@ -920,19 +938,54 @@ if ($action !== '' && !Session::checkToken('post')) {
         $extChecked++;
     }
 
+    // HEAD-check internal links found on pages (up to 5 per batch; separate from main crawl)
+    $intLinkChecked = 0;
+    while ($intLinkChecked < 5 && !empty($queue['int_link_pending'])) {
+        $intLinkUrl = array_shift($queue['int_link_pending']);
+
+        // Skip URLs already fully crawled — check_broken_internal handles those
+        if (isset($queue['scanned'][$intLinkUrl])) {
+            $intLinkChecked++;
+            continue;
+        }
+
+        $intLinkStatus = leAuditHeadCheckUrl($intLinkUrl);
+        $isBroken      = ($intLinkStatus === 0 || $intLinkStatus === 404
+                          || ($intLinkStatus >= 400 && $intLinkStatus < 600));
+        if ($isBroken) {
+            $intLinkReferrer = $queue['int_link_referrers'][$intLinkUrl] ?? '';
+            if ($intLinkReferrer !== '') {
+                if (!isset($results['broken_links'])) {
+                    $results['broken_links'] = [];
+                }
+                $results['broken_links'][] = [
+                    'source_page' => $intLinkReferrer,
+                    'broken_url'  => $intLinkUrl,
+                    'status'      => $intLinkStatus,
+                    'found_at'    => gmdate('c'),
+                    'link_type'   => 'internal',
+                ];
+            }
+        }
+        $intLinkChecked++;
+    }
+
     $results['summary']    = leAuditBuildSummary($results);
     $results['updated_at'] = gmdate('c');
     $queue['updated_at']   = gmdate('c');
     leAuditSessionSet('le_queue', $queue);
     leAuditSessionSet('le_results', $results);
 
-    $pendingAfter    = count($queue['pending']);
-    $extPendingAfter = count($queue['ext_pending'] ?? []);
+    $pendingAfter       = count($queue['pending']);
+    $extPendingAfter    = count($queue['ext_pending'] ?? []);
+    $intLinkPendingAfter = count($queue['int_link_pending'] ?? []);
     $message = 'Batch complete. Scanned ' . (int) $processed . ' pages. '
              . (int) $newUrlsFound . ' new pages discovered. '
              . (int) $pendingAfter . ' pages still pending. '
              . (int) $extChecked . ' external asset(s) checked, '
-             . (int) $extPendingAfter . ' still queued.';
+             . (int) $extPendingAfter . ' still queued. '
+             . (int) $intLinkChecked . ' internal link(s) HEAD-checked, '
+             . (int) $intLinkPendingAfter . ' still queued.';
 } elseif ($action === 'export_csv') {
     $results['summary'] = leAuditBuildSummary($results);
     leAuditExportCsv($results); // streams CSV and exits
@@ -1204,13 +1257,14 @@ $token   = Session::getFormToken();
                 [[div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px 24px;margin-bottom:14px;"]]
                     <?php
                     $opts = [
-                        ['opt_broken_internal', 'check_broken_internal', '🔗 Broken Internal Links',  'Flag your own pages that return 404/5xx'],
-                        ['opt_broken_external', 'check_broken_external', '🌐 Broken External Links',  'HEAD-check outbound links to other sites'],
-                        ['opt_broken_images',   'check_broken_images',   '🖼 Missing Images',          'HEAD-check image src URLs (logos, photos)'],
-                        ['opt_seo',             'check_seo',             '📄 SEO Checks',              'Title, meta description, canonical, H1, noindex'],
-                        ['opt_speed',           'check_speed',           '⚡ Page Speed',              'Flag pages loading over 3 seconds'],
-                        ['opt_alt_text',        'check_alt_text',        '♿ Alt Text',                'Flag images missing alt attribute'],
-                        ['opt_store_passed',    'store_passed_pages',    '✅ Store Passed Pages',      'Keep full data for pages with no issues (uses more memory)'],
+                        ['opt_broken_internal',       'check_broken_internal',       '🔗 Broken Internal Pages',       'Flag crawled pages that return 404/5xx'],
+                        ['opt_broken_internal_links', 'check_broken_internal_links', '🔍 Internal Link Checker',        'HEAD-check internal links found on each page for broken destinations'],
+                        ['opt_broken_external',       'check_broken_external',       '🌐 Broken External Links',        'HEAD-check outbound links to other sites'],
+                        ['opt_broken_images',         'check_broken_images',         '🖼 Missing Images',               'HEAD-check image src URLs (logos, photos)'],
+                        ['opt_seo',                   'check_seo',                   '📄 SEO Checks',                   'Title, meta description, canonical, H1, noindex'],
+                        ['opt_speed',                 'check_speed',                 '⚡ Page Speed',                   'Flag pages loading over 3 seconds'],
+                        ['opt_alt_text',              'check_alt_text',              '♿ Alt Text',                     'Flag images missing alt attribute'],
+                        ['opt_store_passed',          'store_passed_pages',          '✅ Store Passed Pages',           'Keep full data for pages with no issues (uses more memory)'],
                     ];
                     foreach ($opts as [$fieldName, $optKey, $label, $desc]) :
                         $checked = ($scanOptions[$optKey] ?? false) ? ' checked' : '';
@@ -1392,7 +1446,7 @@ $token   = Session::getFormToken();
     [[/section]]
     <?php endif; ?>
 
-    <?php if ($scanOptions['check_broken_internal'] || $scanOptions['check_broken_external'] || $scanOptions['check_broken_images']) : ?>
+    <?php if ($scanOptions['check_broken_internal'] || ($scanOptions['check_broken_internal_links'] ?? false) || $scanOptions['check_broken_external'] || $scanOptions['check_broken_images']) : ?>
     [[section class="le-audit-card"]]
         [[h2]]Broken Links &amp; Missing Images Found[[/h2]]
         [[p class="le-audit-small"]]
