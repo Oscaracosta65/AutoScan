@@ -40,10 +40,6 @@ $config = [
     'batch_limit'      => 10,
     'max_queue_size'   => 25000,
     'request_timeout'  => 8,
-    'audit_dir'        => sys_get_temp_dir() . '/lottoexpert-audit',
-    'queue_file'       => sys_get_temp_dir() . '/lottoexpert-audit/full-site-audit-queue.json',
-    'results_file'     => sys_get_temp_dir() . '/lottoexpert-audit/full-site-audit-results.json',
-    'csv_file'         => sys_get_temp_dir() . '/lottoexpert-audit/full-site-audit-export.csv',
     'allowed_host'     => 'lottoexpert.net',
     'allowed_hosts'    => ['lottoexpert.net', 'www.lottoexpert.net'],
     'ignore_patterns'  => [
@@ -67,10 +63,6 @@ $config = [
         'https://lottoexpert.net/sitemap_xml.xml',
     ],
 ];
-
-if (!is_dir($config['audit_dir'])) {
-    @mkdir($config['audit_dir'], 0755, true);
-}
 
 // ── Core functions ───────────────────────────────────────────────────────────
 
@@ -142,38 +134,21 @@ function leAuditNormalizeUrl(string $url, array $config): string
     return rtrim($clean, '/') === $root ? $root . '/' : rtrim($clean, '/');
 }
 
-function leAuditReadJson(string $file, $default)
+function leAuditSessionGet(string $key, $default)
 {
-    if (!file_exists($file)) {
-        return $default;
-    }
-
-    $raw = @file_get_contents($file);
-
-    if ($raw === false || trim($raw) === '') {
-        return $default;
-    }
-
-    $data = json_decode($raw, true);
-    return is_array($data) ? $data : $default;
+    $val = $_SESSION[$key] ?? null;
+    return is_array($val) ? $val : $default;
 }
 
-function leAuditWriteJson(string $file, array $data): bool
+function leAuditSessionSet(string $key, array $data): void
 {
-    $dir = dirname($file);
-
-    if (!is_dir($dir)) {
-        @mkdir($dir, 0755, true);
-    }
-
-    $encoded = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    return @file_put_contents($file, $encoded, LOCK_EX) !== false;
+    $_SESSION[$key] = $data;
 }
 
 function leAuditInitState(array $config): array
 {
-    $queue   = leAuditReadJson($config['queue_file'], []);
-    $results = leAuditReadJson($config['results_file'], []);
+    $queue   = leAuditSessionGet('le_queue', []);
+    $results = leAuditSessionGet('le_results', []);
 
     if (empty($queue)) {
         $home  = leAuditNormalizeUrl($config['site_root'] . '/', $config);
@@ -184,7 +159,7 @@ function leAuditInitState(array $config): array
             'seen'       => [$home => true],
             'scanned'    => [],
         ];
-        leAuditWriteJson($config['queue_file'], $queue);
+        leAuditSessionSet('le_queue', $queue);
     }
 
     if (empty($results)) {
@@ -194,7 +169,7 @@ function leAuditInitState(array $config): array
             'items'      => [],
             'summary'    => [],
         ];
-        leAuditWriteJson($config['results_file'], $results);
+        leAuditSessionSet('le_results', $results);
     }
 
     return [$queue, $results];
@@ -634,7 +609,7 @@ function leAuditBuildSummary(array $results): array
     return $summary;
 }
 
-function leAuditExportCsv(array $results, array $config): void
+function leAuditExportCsv(array $results): void
 {
     $headers = [
         'URL', 'Status', 'Load Time MS', 'Title', 'Title Length',
@@ -686,9 +661,7 @@ $action  = trim($_POST['audit_action'] ?? '');
 if ($action !== '' && !leAuditCsrfValid()) {
     $message = 'Invalid session token. Refresh the page and try again.';
 } elseif ($action === 'reset') {
-    @unlink($config['queue_file']);
-    @unlink($config['results_file']);
-    @unlink($config['csv_file']);
+    unset($_SESSION['le_queue'], $_SESSION['le_results']);
     [$queue, $results] = leAuditInitState($config);
     $message = 'Audit reset successfully.';
 } elseif ($action === 'discover_sitemap') {
@@ -696,7 +669,7 @@ if ($action !== '' && !leAuditCsrfValid()) {
     $sitemapUrls   = $sitemapResult['urls'];
     $diagnostics   = $sitemapResult['diagnostics'];
     $added         = leAuditAddUrlsToQueue($queue, $sitemapUrls, $config);
-    leAuditWriteJson($config['queue_file'], $queue);
+    leAuditSessionSet('le_queue', $queue);
     $alreadyQueued = count($sitemapUrls) - $added;
     $diagText      = !empty($diagnostics) ? ' Details: ' . implode(' | ', $diagnostics) : '';
     $message = 'Sitemap discovery complete. Found ' . count($sitemapUrls) . ' page URLs. '
@@ -733,37 +706,26 @@ if ($action !== '' && !leAuditCsrfValid()) {
         $newUrlsFound += leAuditAddUrlsToQueue($queue, $discoveredLinks, $config);
 
         $processed++;
-
-        // Write after every URL so no data is lost if PHP times out
-        $queue['updated_at']   = gmdate('c');
-        $results['updated_at'] = gmdate('c');
-        leAuditWriteJson($config['queue_file'], $queue);
-        leAuditWriteJson($config['results_file'], $results);
     }
 
     $results['summary']    = leAuditBuildSummary($results);
     $results['updated_at'] = gmdate('c');
     $queue['updated_at']   = gmdate('c');
-    $writeOk = leAuditWriteJson($config['queue_file'], $queue)
-             & leAuditWriteJson($config['results_file'], $results);
+    leAuditSessionSet('le_queue', $queue);
+    leAuditSessionSet('le_results', $results);
 
     $pendingAfter = count($queue['pending']);
     $message = 'Batch complete. Scanned ' . (int) $processed . ' URLs. '
              . (int) $newUrlsFound . ' new URLs discovered. '
              . (int) $pendingAfter . ' URLs still pending.';
-
-    if (!$writeOk) {
-        $message .= ' ⚠️ WARNING: Could not write data files — check that '
-                  . $config['audit_dir'] . ' is writable by the web server.';
-    }
 } elseif ($action === 'export_csv') {
     $results['summary'] = leAuditBuildSummary($results);
-    leAuditExportCsv($results, $config); // streams CSV and exits
+    leAuditExportCsv($results); // streams CSV and exits
 }
 
 // ── Reload state for display ─────────────────────────────────────────────────
-$results = leAuditReadJson($config['results_file'], []);
-$queue   = leAuditReadJson($config['queue_file'], []);
+$results = leAuditSessionGet('le_results', []);
+$queue   = leAuditSessionGet('le_queue', []);
 $summary = leAuditBuildSummary($results);
 
 $pendingCount = !empty($queue['pending']) ? count($queue['pending']) : 0;
