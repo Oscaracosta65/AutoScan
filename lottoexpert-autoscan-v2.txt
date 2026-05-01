@@ -738,10 +738,16 @@ if ($action !== '' && !Session::checkToken('post')) {
     [$queue, $results] = leAuditInitState($config);
     $message = 'Audit reset successfully.';
 } elseif ($action === 'discover_sitemap') {
-    $sitemapUrls = leAuditLoadSitemapUrls($config);
-    $added       = leAuditAddUrlsToQueue($queue, $sitemapUrls, $config);
+    $sitemapResult = leAuditLoadSitemapUrls($config);
+    $sitemapUrls   = $sitemapResult['urls'];
+    $diagnostics   = $sitemapResult['diagnostics'];
+    $added         = leAuditAddUrlsToQueue($queue, $sitemapUrls, $config);
     leAuditWriteJson($config['queue_file'], $queue);
-    $message = 'Sitemap discovery complete. Found ' . count($sitemapUrls) . ' sitemap URLs. Added ' . (int) $added . ' new URLs to queue.';
+    $alreadyQueued = count($sitemapUrls) - $added;
+    $diagText      = !empty($diagnostics) ? ' Details: ' . implode(' | ', $diagnostics) : '';
+    $message = 'Sitemap discovery complete. Found ' . count($sitemapUrls) . ' page URLs. '
+             . 'Added ' . (int) $added . ' new URLs to queue'
+             . ($alreadyQueued > 0 ? ' (' . $alreadyQueued . ' already queued).' : '.') . $diagText;
 } elseif ($action === 'scan_batch') {
     $processed    = 0;
     $newUrlsFound = 0;
@@ -1348,6 +1354,7 @@ $autoRun = (int) $input->getInt('autorun', 0);
     [[/section]]
 [[/div]]
 
+[[div id="leAuditMeta" data-autorun="<?php echo ($autoRun === 1 && $pendingCount > 0) ? '1' : '0'; ?>" style="display:none"]][[/div]]
 [[script]]
 (function () {
     var buttons = document.querySelectorAll('.le-audit-button');
@@ -1359,14 +1366,16 @@ $autoRun = (int) $input->getInt('autorun', 0);
             }
         });
     }
+
+    var meta = document.getElementById('leAuditMeta');
+    if (meta && meta.getAttribute('data-autorun') === '1') {
+        setTimeout(function () {
+            var form = document.getElementById('leAutoRunForm');
+            if (form) {
+                form.submit();
+            }
+        }, 1500);
+    }
 })();
-    <?php if ($autoRun === 1 && $pendingCount > 0) : ?>
-    setTimeout(function () {
-        var form = document.getElementById('leAutoRunForm');
-        if (form) {
-            form.submit();
-        }
-    }, 1500);
-    <?php endif; ?>
 [[/script]]
 {/source}
