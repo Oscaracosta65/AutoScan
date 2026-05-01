@@ -139,16 +139,18 @@ function leAuditInitState(array $config): array
             'pending'    => [$home],
             'seen'       => [$home => true],
             'scanned'    => [],
+            'referrers'  => [],
         ];
         leAuditSessionSet('le_queue', $queue);
     }
 
     if (empty($results)) {
         $results = [
-            'created_at' => gmdate('c'),
-            'updated_at' => gmdate('c'),
-            'items'      => [],
-            'summary'    => [],
+            'created_at'   => gmdate('c'),
+            'updated_at'   => gmdate('c'),
+            'items'        => [],
+            'summary'      => [],
+            'broken_links' => [],
         ];
         leAuditSessionSet('le_results', $results);
     }
@@ -487,9 +489,13 @@ function leAuditLoadSitemapUrls(array $config): array
     ];
 }
 
-function leAuditAddUrlsToQueue(array &$queue, array $urls, array $config): int
+function leAuditAddUrlsToQueue(array &$queue, array $urls, array $config, string $sourceUrl = ''): int
 {
     $added = 0;
+
+    if (!isset($queue['referrers'])) {
+        $queue['referrers'] = [];
+    }
 
     foreach ($urls as $url) {
         $normalized = leAuditNormalizeUrl($url, $config);
@@ -508,6 +514,11 @@ function leAuditAddUrlsToQueue(array &$queue, array $urls, array $config): int
 
         $queue['pending'][]         = $normalized;
         $queue['seen'][$normalized] = true;
+
+        if ($sourceUrl !== '' && !isset($queue['referrers'][$normalized])) {
+            $queue['referrers'][$normalized] = $sourceUrl;
+        }
+
         $added++;
     }
 
@@ -533,6 +544,7 @@ function leAuditBuildSummary(array $results): array
         'slow_pages'           => 0,
         'images_missing_alt'   => 0,
         'avg_load_time_ms'     => 0,
+        'broken_links_total'   => !empty($results['broken_links']) ? count($results['broken_links']) : 0,
     ];
 
     if (empty($results['items']) || !is_array($results['items'])) {
@@ -684,7 +696,25 @@ if ($action !== '' && !Session::checkToken('post')) {
         $results['items'][$normalized] = $result;
         $queue['scanned'][$normalized] = true;
 
-        $newUrlsFound += leAuditAddUrlsToQueue($queue, $discoveredLinks, $config);
+        $newUrlsFound += leAuditAddUrlsToQueue($queue, $discoveredLinks, $config, $normalized);
+
+        // Record this URL as a broken link if it came from a known source page
+        $isBroken = ($result['status'] === 0 || $result['status'] === 404
+                     || ($result['status'] >= 400 && $result['status'] < 600));
+        if ($isBroken) {
+            $referrer = $queue['referrers'][$normalized] ?? '';
+            if ($referrer !== '') {
+                if (!isset($results['broken_links'])) {
+                    $results['broken_links'] = [];
+                }
+                $results['broken_links'][] = [
+                    'source_page' => $referrer,
+                    'broken_url'  => $normalized,
+                    'status'      => $result['status'],
+                    'found_at'    => gmdate('c'),
+                ];
+            }
+        }
 
         $processed++;
     }
@@ -714,10 +744,11 @@ $seenCount    = !empty($queue['seen'])    ? count($queue['seen'])    : 0;
 $scannedCount = !empty($queue['scanned']) ? count($queue['scanned']) : 0;
 $progressPct  = ($seenCount > 0) ? min(100, (int) round(($scannedCount / $seenCount) * 100)) : 0;
 
-$criticalItems = [];
-$warningItems  = [];
-$passedItems   = [];
-$recentItems   = [];
+$criticalItems    = [];
+$warningItems     = [];
+$passedItems      = [];
+$recentItems      = [];
+$brokenLinkItems  = [];
 
 if (!empty($results['items'])) {
     $allItems = array_values($results['items']);
@@ -736,9 +767,13 @@ if (!empty($results['items'])) {
     $recentItems = array_slice($allItems, 0, 25);
 }
 
-$criticalItems = array_slice($criticalItems, 0, 100);
-$warningItems  = array_slice($warningItems, 0, 100);
-$passedItems   = array_slice($passedItems, 0, 100);
+$criticalItems   = array_slice($criticalItems, 0, 100);
+$warningItems    = array_slice($warningItems, 0, 100);
+$passedItems     = array_slice($passedItems, 0, 100);
+
+if (!empty($results['broken_links'])) {
+    $brokenLinkItems = array_slice($results['broken_links'], 0, 500);
+}
 
 $baseUrl = Uri::current();
 $token   = Session::getFormToken();
@@ -1018,6 +1053,7 @@ $token   = Session::getFormToken();
             [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['slow_pages']; ?>[[/strong]][[span]]Slow Pages (&gt;3 s)[[/span]][[/div]]
             [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['images_missing_alt']; ?>[[/strong]][[span]]Pages w/ Missing Alt[[/span]][[/div]]
             [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['avg_load_time_ms']; ?> ms[[/strong]][[span]]Avg Load Time[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['broken_links_total']; ?>[[/strong]][[span]]Broken Links Found[[/span]][[/div]]
         [[/div]]
     [[/section]]
 
@@ -1108,6 +1144,47 @@ $token   = Session::getFormToken();
                                 [[td]]<?php echo htmlspecialchars($item['meta_description'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
                                 [[td class="le-audit-url"]]<?php echo htmlspecialchars($item['canonical'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
                                 [[td]]<?php echo (int) $item['load_time_ms']; ?> ms[[/td]]
+                            [[/tr]]
+                        <?php endforeach; ?>
+                    [[/tbody]]
+                [[/table]]
+            [[/div]]
+        <?php endif; ?>
+    [[/section]]
+
+    [[section class="le-audit-card"]]
+        [[h2]]Broken Links Found[[/h2]]
+        [[p class="le-audit-small"]]
+            These are internal links discovered while crawling that returned a 4xx or 5xx error. The &ldquo;Source Page&rdquo; column shows which page on your site contains the broken link.
+        [[/p]]
+        <?php if (empty($brokenLinkItems)) : ?>
+            [[p]][[span class="le-audit-pill pass"]]PASS[[/span]] No broken internal links detected yet.[[/p]]
+        <?php else : ?>
+            [[div class="le-audit-table-wrap"]]
+                [[table class="le-audit-table"]]
+                    [[thead]]
+                        [[tr]]
+                            [[th]]Status[[/th]]
+                            [[th]]Source Page (contains the broken link)[[/th]]
+                            [[th]]Broken Link URL[[/th]]
+                            [[th]]Found At[[/th]]
+                        [[/tr]]
+                    [[/thead]]
+                    [[tbody]]
+                        <?php foreach ($brokenLinkItems as $bl) : ?>
+                            [[tr]]
+                                [[td]][[span class="le-audit-pill critical"]]<?php echo (int) $bl['status']; ?>[[/span]][[/td]]
+                                [[td class="le-audit-url"]]
+                                    [[a href="<?php echo htmlspecialchars($bl['source_page'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
+                                        <?php echo htmlspecialchars($bl['source_page'], ENT_QUOTES, 'UTF-8'); ?>
+                                    [[/a]]
+                                [[/td]]
+                                [[td class="le-audit-url"]]
+                                    [[a href="<?php echo htmlspecialchars($bl['broken_url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
+                                        <?php echo htmlspecialchars($bl['broken_url'], ENT_QUOTES, 'UTF-8'); ?>
+                                    [[/a]]
+                                [[/td]]
+                                [[td class="le-audit-small"]]<?php echo htmlspecialchars($bl['found_at'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
                             [[/tr]]
                         <?php endforeach; ?>
                     [[/tbody]]
