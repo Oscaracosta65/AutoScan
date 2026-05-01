@@ -1,38 +1,19 @@
+{source}
 <?php
+defined('_JEXEC') or die;
+
 /*
- * LottoExpert Full Site Audit Scanner — Standalone version.
- * Place at: /public_html/lottoexpert/master-results-engine.php
- * IMPORTANT: Restrict access to this file (e.g. htpasswd, IP allow-list,
- * or delete it from the server when not in use).
+ * LottoExpert Full Site Audit Scanner — Joomla/Sourcerer version.
+ * Paste into a Joomla article using the Sourcerer plugin.
+ * IMPORTANT: Keep this article unpublished or access-restricted when not actively using it.
  */
 
-declare(strict_types=1);
+use Joomla\CMS\Factory;
+use Joomla\CMS\Uri\Uri;
+use Joomla\CMS\Session\Session;
 
-// ── Session / CSRF ──────────────────────────────────────────────────────────
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
-if (empty($_SESSION['le_csrf_token'])) {
-    $_SESSION['le_csrf_token'] = bin2hex(random_bytes(32));
-}
-$csrfToken = $_SESSION['le_csrf_token'];
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-function leAuditCsrfValid(): bool
-{
-    $posted = $_POST['le_csrf_token'] ?? '';
-    return isset($_SESSION['le_csrf_token'])
-        && hash_equals($_SESSION['le_csrf_token'], $posted);
-}
-
-function leAuditBaseUrl(): string
-{
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $path   = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
-    return $scheme . '://' . $host . $path;
-}
+$app   = Factory::getApplication();
+$input = $app->input;
 
 // ── Config ───────────────────────────────────────────────────────────────────
 $config = [
@@ -656,9 +637,9 @@ function leAuditExportCsv(array $results): void
 [$queue, $results] = leAuditInitState($config);
 
 $message = '';
-$action  = trim($_POST['audit_action'] ?? '');
+$action  = $input->getCmd('audit_action', '');
 
-if ($action !== '' && !leAuditCsrfValid()) {
+if ($action !== '' && !Session::checkToken('post')) {
     $message = 'Invalid session token. Refresh the page and try again.';
 } elseif ($action === 'reset') {
     unset($_SESSION['le_queue'], $_SESSION['le_results']);
@@ -759,19 +740,11 @@ $criticalItems = array_slice($criticalItems, 0, 100);
 $warningItems  = array_slice($warningItems, 0, 100);
 $passedItems   = array_slice($passedItems, 0, 100);
 
-$baseUrl = leAuditBaseUrl();
+$baseUrl = Uri::current();
+$token   = Session::getFormToken();
 ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow">
-<title>LottoExpert Site Audit Scanner</title>
-<style>
-*, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; background: #f4f7fb; }
 
+[[style]]
 .le-audit-wrap {
     max-width: 1280px;
     margin: 32px auto;
@@ -828,13 +801,27 @@ body { margin: 0; background: #f4f7fb; }
 }
 
 .le-audit-button:hover,
-.le-audit-button:focus { background: #1558b0; color: #ffffff; }
+.le-audit-button:focus {
+    background: #1558b0;
+    color: #ffffff;
+}
 
-.le-audit-button.secondary { background: #eef4ff; color: #174ea6; }
+.le-audit-button.secondary {
+    background: #eef4ff;
+    color: #174ea6;
+}
+
 .le-audit-button.secondary:hover,
-.le-audit-button.secondary:focus { background: #dbeafe; color: #174ea6; }
+.le-audit-button.secondary:focus {
+    background: #dbeafe;
+    color: #174ea6;
+}
 
-.le-audit-button.danger { background: #b42318; color: #ffffff; }
+.le-audit-button.danger {
+    background: #b42318;
+    color: #ffffff;
+}
+
 .le-audit-button:disabled { opacity: .6; cursor: default; }
 
 .le-audit-grid {
@@ -957,117 +944,113 @@ body { margin: 0; background: #f4f7fb; }
     .le-audit-title   { font-size: 24px; }
     .le-audit-button  { width: 100%; }
 }
-</style>
-</head>
-<body>
+[[/style]]
 
-<div class="le-audit-wrap">
+[[div class="le-audit-wrap"]]
 
-    <section class="le-audit-card">
-        <h1 class="le-audit-title">LottoExpert Full Site Audit Scanner</h1>
-        <p class="le-audit-subtitle">
+    [[section class="le-audit-card"]]
+        [[h1 class="le-audit-title"]]LottoExpert Full Site Audit Scanner[[/h1]]
+        [[p class="le-audit-subtitle"]]
             Private crawler for LottoExpert. Discovers internal URLs from the sitemap (including nested sitemap index files), crawls internal links, scans 10 URLs per batch, auto-continues without timeouts, and reports SEO, crawlability, metadata, canonical, H1, noindex, image alt, speed, and broken-page issues.
-        </p>
+        [[/p]]
 
         <?php if ($message !== '') : ?>
-            <div class="le-audit-alert"><?php echo nl2br(htmlspecialchars($message, ENT_QUOTES, 'UTF-8')); ?></div>
+            [[div class="le-audit-alert"]]<?php echo nl2br(htmlspecialchars($message, ENT_QUOTES, 'UTF-8')); ?>[[/div]]
         <?php endif; ?>
 
-        <div class="le-audit-actions">
-            <form id="leAutoScanForm" method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>">
-                <input type="hidden" name="audit_action" value="scan_batch">
-                <input type="hidden" name="le_csrf_token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
-                <button class="le-audit-button" type="submit">Scan Next 10 URLs</button>
-            </form>
+        [[div class="le-audit-actions"]]
+            [[form id="leAutoScanForm" method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>"]]
+                [[input type="hidden" name="audit_action" value="scan_batch"]]
+                [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
+                [[button class="le-audit-button" type="submit"]]Scan Next 10 URLs[[/button]]
+            [[/form]]
 
-            <button id="leBtnAutoScan" class="le-audit-button secondary" type="button">Auto Scan Until Finished</button>
+            [[button id="leBtnAutoScan" class="le-audit-button secondary" type="button"]]Auto Scan Until Finished[[/button]]
 
-            <form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>">
-                <input type="hidden" name="audit_action" value="discover_sitemap">
-                <input type="hidden" name="le_csrf_token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
-                <button class="le-audit-button secondary" type="submit">Discover Sitemap URLs</button>
-            </form>
+            [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>"]]
+                [[input type="hidden" name="audit_action" value="discover_sitemap"]]
+                [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
+                [[button class="le-audit-button secondary" type="submit"]]Discover Sitemap URLs[[/button]]
+            [[/form]]
 
-            <form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>">
-                <input type="hidden" name="audit_action" value="export_csv">
-                <input type="hidden" name="le_csrf_token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
-                <button class="le-audit-button secondary" type="submit">Export CSV</button>
-            </form>
+            [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>"]]
+                [[input type="hidden" name="audit_action" value="export_csv"]]
+                [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
+                [[button class="le-audit-button secondary" type="submit"]]Export CSV[[/button]]
+            [[/form]]
 
-            <form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>"
-                  onsubmit="return confirm('Reset the full audit queue and results?');">
-                <input type="hidden" name="audit_action" value="reset">
-                <input type="hidden" name="le_csrf_token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
-                <button class="le-audit-button danger" type="submit">Reset Audit</button>
-            </form>
-        </div>
-    </section>
+            [[form method="post" action="<?php echo htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'); ?>" onsubmit="return confirm('Reset the full audit queue and results?');"]]
+                [[input type="hidden" name="audit_action" value="reset"]]
+                [[input type="hidden" name="<?php echo $token; ?>" value="1"]]
+                [[button class="le-audit-button danger" type="submit"]]Reset Audit[[/button]]
+            [[/form]]
+        [[/div]]
+    [[/section]]
 
-    <section class="le-audit-card">
-        <h2>Scan Progress</h2>
-        <div class="le-audit-progress-bar-wrap">
-            <div class="le-audit-progress-bar" style="width:<?php echo (int) $progressPct; ?>%"></div>
-        </div>
-        <p class="le-audit-progress-label">
+    [[section class="le-audit-card"]]
+        [[h2]]Scan Progress[[/h2]]
+        [[div class="le-audit-progress-bar-wrap"]]
+            [[div class="le-audit-progress-bar" style="width:<?php echo (int) $progressPct; ?>%"]][[/div]]
+        [[/div]]
+        [[p class="le-audit-progress-label"]]
             <?php echo (int) $progressPct; ?>% complete &mdash;
             <?php echo (int) $scannedCount; ?> scanned of
             <?php echo (int) $seenCount; ?> discovered &mdash;
             <?php echo (int) $pendingCount; ?> pending
-        </p>
-    </section>
+        [[/p]]
+    [[/section]]
 
-    <section class="le-audit-card">
-        <h2>Audit Overview</h2>
-        <div class="le-audit-grid">
-            <div class="le-audit-metric"><strong><?php echo (int) $scannedCount; ?></strong><span>URLs Scanned</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $pendingCount; ?></strong><span>URLs Pending</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $seenCount; ?></strong><span>Total Discovered</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['critical_pages']; ?></strong><span>Critical Pages</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['warning_pages']; ?></strong><span>Warning Pages</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['passed_pages']; ?></strong><span>Passed Pages</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['missing_titles']; ?></strong><span>Missing Titles</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['missing_descriptions']; ?></strong><span>Missing Descriptions</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['not_found_pages']; ?></strong><span>404 Pages</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['redirect_pages']; ?></strong><span>Redirect Pages</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['missing_canonicals']; ?></strong><span>Missing Canonicals</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['noindex_pages']; ?></strong><span>Noindex Pages</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['slow_pages']; ?></strong><span>Slow Pages (&gt;3 s)</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['images_missing_alt']; ?></strong><span>Pages w/ Missing Alt</span></div>
-            <div class="le-audit-metric"><strong><?php echo (int) $summary['avg_load_time_ms']; ?> ms</strong><span>Avg Load Time</span></div>
-        </div>
-    </section>
+    [[section class="le-audit-card"]]
+        [[h2]]Audit Overview[[/h2]]
+        [[div class="le-audit-grid"]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $scannedCount; ?>[[/strong]][[span]]URLs Scanned[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $pendingCount; ?>[[/strong]][[span]]URLs Pending[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $seenCount; ?>[[/strong]][[span]]Total Discovered[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['critical_pages']; ?>[[/strong]][[span]]Critical Pages[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['warning_pages']; ?>[[/strong]][[span]]Warning Pages[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['passed_pages']; ?>[[/strong]][[span]]Passed Pages[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['missing_titles']; ?>[[/strong]][[span]]Missing Titles[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['missing_descriptions']; ?>[[/strong]][[span]]Missing Descriptions[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['not_found_pages']; ?>[[/strong]][[span]]404 Pages[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['redirect_pages']; ?>[[/strong]][[span]]Redirect Pages[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['missing_canonicals']; ?>[[/strong]][[span]]Missing Canonicals[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['noindex_pages']; ?>[[/strong]][[span]]Noindex Pages[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['slow_pages']; ?>[[/strong]][[span]]Slow Pages (&gt;3 s)[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['images_missing_alt']; ?>[[/strong]][[span]]Pages w/ Missing Alt[[/span]][[/div]]
+            [[div class="le-audit-metric"]][[strong]]<?php echo (int) $summary['avg_load_time_ms']; ?> ms[[/strong]][[span]]Avg Load Time[[/span]][[/div]]
+        [[/div]]
+    [[/section]]
 
-    <section id="leAutorunRunning" class="le-audit-card" style="display:none">
-        <h2>Auto Scan Running</h2>
-        <p class="le-audit-small">
-            Auto scan is active &mdash; <span id="leAutorunPending"></span> URLs still pending.
+    [[section id="leAutorunRunning" class="le-audit-card" style="display:none"]]
+        [[h2]]Auto Scan Running[[/h2]]
+        [[p class="le-audit-small"]]
+            Auto scan is active &mdash; [[span id="leAutorunPending"]][[/span]] URLs still pending.
             Leave this tab open until the progress bar reaches 100%.
-        </p>
-    </section>
+        [[/p]]
+    [[/section]]
 
-    <section id="leAutorunDone" class="le-audit-card" style="display:none">
-        <h2>Auto Scan Complete</h2>
-        <p class="le-audit-small">All discovered URLs have been scanned. Review the results below.</p>
-    </section>
+    [[section id="leAutorunDone" class="le-audit-card" style="display:none"]]
+        [[h2]]Auto Scan Complete[[/h2]]
+        [[p class="le-audit-small"]]All discovered URLs have been scanned. Review the results below.[[/p]]
+    [[/section]]
 
-    <!-- Recently Scanned -->
-    <section class="le-audit-card">
-        <h2>Recently Scanned (last 25)</h2>
+    [[section class="le-audit-card"]]
+        [[h2]]Recently Scanned (last 25)[[/h2]]
         <?php if (empty($recentItems)) : ?>
-            <p class="le-audit-small">No URLs scanned yet. Run a batch scan to see results here.</p>
+            [[p class="le-audit-small"]]No URLs scanned yet. Run a batch scan to see results here.[[/p]]
         <?php else : ?>
-            <div class="le-audit-table-wrap">
-                <table class="le-audit-table">
-                    <thead>
-                        <tr>
-                            <th>Status</th>
-                            <th>URL</th>
-                            <th>Result</th>
-                            <th>Load</th>
-                            <th>Scanned At</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+            [[div class="le-audit-table-wrap"]]
+                [[table class="le-audit-table"]]
+                    [[thead]]
+                        [[tr]]
+                            [[th]]Status[[/th]]
+                            [[th]]URL[[/th]]
+                            [[th]]Result[[/th]]
+                            [[th]]Load[[/th]]
+                            [[th]]Scanned At[[/th]]
+                        [[/tr]]
+                    [[/thead]]
+                    [[tbody]]
                         <?php foreach ($recentItems as $item) : ?>
                             <?php
                             if (!empty($item['issues'])) {
@@ -1078,145 +1061,141 @@ body { margin: 0; background: #f4f7fb; }
                                 $pc = 'pass'; $pl = 'Pass';
                             }
                             ?>
-                            <tr>
-                                <td><span class="le-audit-pill <?php echo $pc; ?>"><?php echo (int) $item['status']; ?></span></td>
-                                <td class="le-audit-url">
-                                    <a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener">
+                            [[tr]]
+                                [[td]][[span class="le-audit-pill <?php echo $pc; ?>"]]<?php echo (int) $item['status']; ?>[[/span]][[/td]]
+                                [[td class="le-audit-url"]]
+                                    [[a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
                                         <?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>
-                                    </a>
-                                </td>
-                                <td><span class="le-audit-pill <?php echo $pc; ?>"><?php echo htmlspecialchars($pl, ENT_QUOTES, 'UTF-8'); ?></span></td>
-                                <td><?php echo (int) $item['load_time_ms']; ?> ms</td>
-                                <td class="le-audit-small"><?php echo htmlspecialchars($item['scanned_at'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-                            </tr>
+                                    [[/a]]
+                                [[/td]]
+                                [[td]][[span class="le-audit-pill <?php echo $pc; ?>"]]<?php echo htmlspecialchars($pl, ENT_QUOTES, 'UTF-8'); ?>[[/span]][[/td]]
+                                [[td]]<?php echo (int) $item['load_time_ms']; ?> ms[[/td]]
+                                [[td class="le-audit-small"]]<?php echo htmlspecialchars($item['scanned_at'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                            [[/tr]]
                         <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+                    [[/tbody]]
+                [[/table]]
+            [[/div]]
         <?php endif; ?>
-    </section>
+    [[/section]]
 
-    <!-- Critical Issues -->
-    <section class="le-audit-card">
-        <h2>Critical Issues</h2>
+    [[section class="le-audit-card"]]
+        [[h2]]Critical Issues[[/h2]]
         <?php if (empty($criticalItems)) : ?>
-            <p><span class="le-audit-pill pass">PASS</span> No critical issues found yet.</p>
+            [[p]][[span class="le-audit-pill pass"]]PASS[[/span]] No critical issues found yet.[[/p]]
         <?php else : ?>
-            <div class="le-audit-table-wrap">
-                <table class="le-audit-table">
-                    <thead>
-                        <tr>
-                            <th>Status</th><th>URL</th><th>Issues</th>
-                            <th>Title</th><th>H1 Text</th><th>Meta Description</th>
-                            <th>Canonical</th><th>Load</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+            [[div class="le-audit-table-wrap"]]
+                [[table class="le-audit-table"]]
+                    [[thead]]
+                        [[tr]]
+                            [[th]]Status[[/th]][[th]]URL[[/th]][[th]]Issues[[/th]]
+                            [[th]]Title[[/th]][[th]]H1 Text[[/th]][[th]]Meta Description[[/th]]
+                            [[th]]Canonical[[/th]][[th]]Load[[/th]]
+                        [[/tr]]
+                    [[/thead]]
+                    [[tbody]]
                         <?php foreach ($criticalItems as $item) : ?>
-                            <tr>
-                                <td><span class="le-audit-pill critical"><?php echo (int) $item['status']; ?></span></td>
-                                <td class="le-audit-url">
-                                    <a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener">
+                            [[tr]]
+                                [[td]][[span class="le-audit-pill critical"]]<?php echo (int) $item['status']; ?>[[/span]][[/td]]
+                                [[td class="le-audit-url"]]
+                                    [[a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
                                         <?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>
-                                    </a>
-                                </td>
-                                <td><?php echo htmlspecialchars(implode(' | ', $item['issues']), ENT_QUOTES, 'UTF-8'); ?></td>
-                                <td><?php echo htmlspecialchars($item['title'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-                                <td><?php echo htmlspecialchars($item['h1_text'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-                                <td><?php echo htmlspecialchars($item['meta_description'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-                                <td class="le-audit-url"><?php echo htmlspecialchars($item['canonical'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-                                <td><?php echo (int) $item['load_time_ms']; ?> ms</td>
-                            </tr>
+                                    [[/a]]
+                                [[/td]]
+                                [[td]]<?php echo htmlspecialchars(implode(' | ', $item['issues']), ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td]]<?php echo htmlspecialchars($item['title'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td]]<?php echo htmlspecialchars($item['h1_text'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td]]<?php echo htmlspecialchars($item['meta_description'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td class="le-audit-url"]]<?php echo htmlspecialchars($item['canonical'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td]]<?php echo (int) $item['load_time_ms']; ?> ms[[/td]]
+                            [[/tr]]
                         <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+                    [[/tbody]]
+                [[/table]]
+            [[/div]]
         <?php endif; ?>
-    </section>
+    [[/section]]
 
-    <!-- Warnings -->
-    <section class="le-audit-card">
-        <h2>Warnings</h2>
+    [[section class="le-audit-card"]]
+        [[h2]]Warnings[[/h2]]
         <?php if (empty($warningItems)) : ?>
-            <p><span class="le-audit-pill pass">PASS</span> No warnings found yet.</p>
+            [[p]][[span class="le-audit-pill pass"]]PASS[[/span]] No warnings found yet.[[/p]]
         <?php else : ?>
-            <div class="le-audit-table-wrap">
-                <table class="le-audit-table">
-                    <thead>
-                        <tr>
-                            <th>Status</th><th>URL</th><th>Warnings</th>
-                            <th>Title Length</th><th>Desc. Length</th>
-                            <th>H1 Count</th><th>Imgs No Alt</th><th>Load</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+            [[div class="le-audit-table-wrap"]]
+                [[table class="le-audit-table"]]
+                    [[thead]]
+                        [[tr]]
+                            [[th]]Status[[/th]][[th]]URL[[/th]][[th]]Warnings[[/th]]
+                            [[th]]Title Length[[/th]][[th]]Desc. Length[[/th]]
+                            [[th]]H1 Count[[/th]][[th]]Imgs No Alt[[/th]][[th]]Load[[/th]]
+                        [[/tr]]
+                    [[/thead]]
+                    [[tbody]]
                         <?php foreach ($warningItems as $item) : ?>
-                            <tr>
-                                <td><span class="le-audit-pill warning"><?php echo (int) $item['status']; ?></span></td>
-                                <td class="le-audit-url">
-                                    <a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener">
+                            [[tr]]
+                                [[td]][[span class="le-audit-pill warning"]]<?php echo (int) $item['status']; ?>[[/span]][[/td]]
+                                [[td class="le-audit-url"]]
+                                    [[a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
                                         <?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>
-                                    </a>
-                                </td>
-                                <td><?php echo htmlspecialchars(implode(' | ', $item['warnings']), ENT_QUOTES, 'UTF-8'); ?></td>
-                                <td><?php echo (int) $item['title_length']; ?></td>
-                                <td><?php echo (int) $item['meta_description_length']; ?></td>
-                                <td><?php echo (int) $item['h1_count']; ?></td>
-                                <td><?php echo (int) ($item['images_without_alt'] ?? 0); ?></td>
-                                <td><?php echo (int) $item['load_time_ms']; ?> ms</td>
-                            </tr>
+                                    [[/a]]
+                                [[/td]]
+                                [[td]]<?php echo htmlspecialchars(implode(' | ', $item['warnings']), ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td]]<?php echo (int) $item['title_length']; ?>[[/td]]
+                                [[td]]<?php echo (int) $item['meta_description_length']; ?>[[/td]]
+                                [[td]]<?php echo (int) $item['h1_count']; ?>[[/td]]
+                                [[td]]<?php echo (int) ($item['images_without_alt'] ?? 0); ?>[[/td]]
+                                [[td]]<?php echo (int) $item['load_time_ms']; ?> ms[[/td]]
+                            [[/tr]]
                         <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+                    [[/tbody]]
+                [[/table]]
+            [[/div]]
         <?php endif; ?>
-    </section>
+    [[/section]]
 
-    <!-- Passed -->
-    <section class="le-audit-card">
-        <h2>Passed Pages (no issues, no warnings) &mdash; showing up to 100</h2>
+    [[section class="le-audit-card"]]
+        [[h2]]Passed Pages (no issues, no warnings) &mdash; showing up to 100[[/h2]]
         <?php if (empty($passedItems)) : ?>
-            <p class="le-audit-small">No passed pages recorded yet.</p>
+            [[p class="le-audit-small"]]No passed pages recorded yet.[[/p]]
         <?php else : ?>
-            <div class="le-audit-table-wrap">
-                <table class="le-audit-table">
-                    <thead>
-                        <tr>
-                            <th>Status</th><th>URL</th><th>Title</th><th>Load</th><th>Scanned At</th>
-                        </tr>
-                    </thead>
-                    <tbody>
+            [[div class="le-audit-table-wrap"]]
+                [[table class="le-audit-table"]]
+                    [[thead]]
+                        [[tr]]
+                            [[th]]Status[[/th]][[th]]URL[[/th]][[th]]Title[[/th]][[th]]Load[[/th]][[th]]Scanned At[[/th]]
+                        [[/tr]]
+                    [[/thead]]
+                    [[tbody]]
                         <?php foreach ($passedItems as $item) : ?>
-                            <tr>
-                                <td><span class="le-audit-pill pass"><?php echo (int) $item['status']; ?></span></td>
-                                <td class="le-audit-url">
-                                    <a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener">
+                            [[tr]]
+                                [[td]][[span class="le-audit-pill pass"]]<?php echo (int) $item['status']; ?>[[/span]][[/td]]
+                                [[td class="le-audit-url"]]
+                                    [[a href="<?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener"]]
                                         <?php echo htmlspecialchars($item['url'], ENT_QUOTES, 'UTF-8'); ?>
-                                    </a>
-                                </td>
-                                <td><?php echo htmlspecialchars($item['title'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-                                <td><?php echo (int) $item['load_time_ms']; ?> ms</td>
-                                <td class="le-audit-small"><?php echo htmlspecialchars($item['scanned_at'] ?? '', ENT_QUOTES, 'UTF-8'); ?></td>
-                            </tr>
+                                    [[/a]]
+                                [[/td]]
+                                [[td]]<?php echo htmlspecialchars($item['title'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                                [[td]]<?php echo (int) $item['load_time_ms']; ?> ms[[/td]]
+                                [[td class="le-audit-small"]]<?php echo htmlspecialchars($item['scanned_at'] ?? '', ENT_QUOTES, 'UTF-8'); ?>[[/td]]
+                            [[/tr]]
                         <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+                    [[/tbody]]
+                [[/table]]
+            [[/div]]
         <?php endif; ?>
-    </section>
+    [[/section]]
 
-    <!-- CSV Export -->
-    <section class="le-audit-card">
-        <h2>CSV Export</h2>
-        <p class="le-audit-small">
-            Use the "Export CSV" button above to download all scanned results as a CSV file directly to your computer.
-        </p>
-    </section>
+    [[section class="le-audit-card"]]
+        [[h2]]CSV Export[[/h2]]
+        [[p class="le-audit-small"]]
+            Use the &ldquo;Export CSV&rdquo; button above to download all scanned results as a CSV file directly to your computer.
+        [[/p]]
+    [[/section]]
 
-</div><!-- /.le-audit-wrap -->
+[[/div]]
 
-<div id="leAuditMeta" data-pending="<?php echo (int) $pendingCount; ?>" style="display:none"></div>
-<script>
+[[div id="leAuditMeta" data-pending="<?php echo (int) $pendingCount; ?>" style="display:none"]][[/div]]
+[[script]]
 (function () {
     var AUTORUN_KEY = 'leAuditAutorun';
     var meta    = document.getElementById('leAuditMeta');
@@ -1270,6 +1249,5 @@ body { margin: 0; background: #f4f7fb; }
         }
     }
 })();
-</script>
-</body>
-</html>
+[[/script]]
+{/source}
