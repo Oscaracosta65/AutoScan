@@ -40,10 +40,10 @@ $config = [
     'batch_limit'      => 10,
     'max_queue_size'   => 25000,
     'request_timeout'  => 8,
-    'audit_dir'        => __DIR__ . '/audit-results',
-    'queue_file'       => __DIR__ . '/audit-results/full-site-audit-queue.json',
-    'results_file'     => __DIR__ . '/audit-results/full-site-audit-results.json',
-    'csv_file'         => __DIR__ . '/audit-results/full-site-audit-export.csv',
+    'audit_dir'        => sys_get_temp_dir() . '/lottoexpert-audit',
+    'queue_file'       => sys_get_temp_dir() . '/lottoexpert-audit/full-site-audit-queue.json',
+    'results_file'     => sys_get_temp_dir() . '/lottoexpert-audit/full-site-audit-results.json',
+    'csv_file'         => sys_get_temp_dir() . '/lottoexpert-audit/full-site-audit-export.csv',
     'allowed_host'     => 'lottoexpert.net',
     'allowed_hosts'    => ['lottoexpert.net', 'www.lottoexpert.net'],
     'ignore_patterns'  => [
@@ -65,8 +65,6 @@ $config = [
     'sitemap_timeout'    => 30,
     'sitemap_candidates' => [
         'https://lottoexpert.net/sitemap_xml.xml',
-        'https://lottoexpert.net/sitemap.xml',
-        'https://lottoexpert.net/sitemap_index.xml',
     ],
 ];
 
@@ -645,7 +643,12 @@ function leAuditExportCsv(array $results, array $config): void
         'Issues', 'Warnings', 'Scanned At',
     ];
 
-    $fp = fopen($config['csv_file'], 'w');
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="full-site-audit-export.csv"');
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Pragma: no-cache');
+
+    $fp = fopen('php://output', 'w');
     fputcsv($fp, $headers);
 
     if (!empty($results['items'])) {
@@ -671,6 +674,7 @@ function leAuditExportCsv(array $results, array $config): void
     }
 
     fclose($fp);
+    exit;
 }
 
 // ── Handle actions ───────────────────────────────────────────────────────────
@@ -754,8 +758,7 @@ if ($action !== '' && !leAuditCsrfValid()) {
     }
 } elseif ($action === 'export_csv') {
     $results['summary'] = leAuditBuildSummary($results);
-    leAuditExportCsv($results, $config);
-    $message = 'CSV export updated: ' . basename($config['csv_file']);
+    leAuditExportCsv($results, $config); // streams CSV and exits
 }
 
 // ── Reload state for display ─────────────────────────────────────────────────
@@ -1243,10 +1246,8 @@ body { margin: 0; background: #f4f7fb; }
     <!-- CSV Export -->
     <section class="le-audit-card">
         <h2>CSV Export</h2>
-        <div class="le-audit-code"><?php echo htmlspecialchars($config['csv_file'], ENT_QUOTES, 'UTF-8'); ?></div>
         <p class="le-audit-small">
-            Use the "Export CSV" button above to generate or refresh the file,
-            then download via FTP or File Manager.
+            Use the "Export CSV" button above to download all scanned results as a CSV file directly to your computer.
         </p>
     </section>
 
